@@ -1,0 +1,27 @@
+from enum import Enum
+from plum import dispatch
+from typing import TypeVar, Union, Generic, List, Tuple
+from spire.pdf.common import *
+from spire.pdf import *
+from ctypes import *
+import abc
+
+class Security_IPdfSignatureFormatter(abc.ABC):
+    """
+    Signature formatter interface.
+    """
+
+    @property
+    @abc.abstractmethod
+    def Parameters(self) -> 'Dictionary2':
+        """
+        Get the parameters.
+        """
+
+    # @abc.abstractmethod
+    # def Sign(self, content: 'Byte[]') -> List['Byte']:
+    #     """
+    #     Sign the content.
+    #     Args: content: The data to be signed.
+    #     Returns: The signature.
+    #     """

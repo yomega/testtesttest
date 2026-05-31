@@ -1,0 +1,82 @@
+Metadata-Version: 2.4
+Name: pdf-spec-builder
+Version: 0.1.0
+Summary: Offline Windows desktop app for converting technical documents into developer-facing specifications.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: spire.pdf>=10.5.2
+Requires-Dist: pypdfium2>=4.30.0
+Requires-Dist: pytesseract>=0.3.13
+Requires-Dist: python-docx>=1.1.2
+
+# PDF Specification Builder
+
+Windows-first desktop application for turning PDFs and other technical documents into developer-facing specifications.
+
+## Why this app exists
+
+The goal is not flashy summarization. The goal is to extract source content as faithfully as possible, preserve traceability, and produce a structured specification that a lead developer can trust.
+
+Key priorities:
+
+- Offline after installation
+- Local-only OCR and AI-assisted parsing
+- Evidence-backed output
+- User-defined table schema support
+- Microsoft Word (`.docx`) export first
+
+## Current state
+
+This repository now contains:
+
+- A product and technical specification in [`docs/product-spec.md`](docs/product-spec.md)
+- A Python application skeleton in `src/pdf_spec_app`
+- A minimal desktop UI workflow
+- Core domain models for document extraction, table schema weighting, and spec generation
+- A basic `.docx` exporter interface
+- Unit tests for table schema scoring
+
+## Proposed stack
+
+- Python 3.11+
+- `tkinter` for the initial Windows desktop UI
+- `Spire.PDF` for primary PDF text and table extraction
+- Optional `Microsoft Power Query SDK` / `PQTest.exe` execution of `Pdf.Tables()`
+- `pypdfium2` plus `pytesseract` for local OCR fallback on image-only PDF pages
+- `python-docx` for Word export
+- Future packaging target: `PyInstaller`
+
+## First-run workflow
+
+1. Open the app
+2. Import a PDF or supported document
+3. Optionally define one or more known table schemas
+4. Run extraction
+5. Review the generated specification preview
+6. Export to `.docx`
+
+## Development notes
+
+The current implementation emphasizes architecture and safety rails:
+
+- Extraction results keep source references
+- Generated statements require evidence
+- User-defined table schemas are scored higher than generic detections
+- Low-confidence or unsupported claims should be flagged, not invented
+- PDF extraction is wired around `Spire.PDF`, with local OCR fallback for image-only pages
+
+## Local dependencies beyond pip
+
+For local PDF/image extraction with OCR, install Tesseract OCR. The current local-only build also supports `.docx`, `.txt`, and `.md` without any cloud or model dependency.
+
+## Running locally
+
+```powershell
+python -m src.pdf_spec_app
+```
+
+## Running tests
+
+```powershell
+python -m unittest discover -s tests
+```
