@@ -244,7 +244,7 @@ def _infer_tables_from_text(page_number: int, text: str) -> list[ExtractedTable]
         body = rows[1:]
         if not body:
             continue
-        raw_text = "\n".join(" | ".join(cell for cell in row) for row in rows)
+        raw_text = _form_markdown_table(rows)
         tables.append(
             ExtractedTable(
                 page_number=page_number,
@@ -340,6 +340,19 @@ def _tool_launch_env(tool_path: Path) -> dict[str, str]:
     env["PATH"] = f"{tool_dir}{os.pathsep}{current_path}" if current_path else tool_dir
     return env
 
+def _form_markdown_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+
+    header = rows[0]
+    body = rows[1:]
+
+    markdown = "| " + " | ".join(header) + " |\n"
+    markdown += "| " + " | ".join("---" for _ in header) + " |\n"
+    for row in body:
+        markdown += "| " + " | ".join(row) + " |\n"
+
+    return markdown
 
 class DocumentExtractor:
     """Extracts local document content using Spire.PDF for PDFs."""
@@ -734,7 +747,7 @@ class DocumentExtractor:
                 continue
             headers = rows[0]
             body = rows[1:]
-            raw_text = "\n".join(" | ".join(cell for cell in row) for row in rows)
+            raw_text = _form_markdown_table(rows)
             built_tables.append(
                 ExtractedTable(
                     page_number=page_number,
@@ -875,7 +888,7 @@ class DocumentExtractor:
             normalized_rows = _normalize_extracted_rows(extracted_rows)
             if len(normalized_rows) < 2:
                 continue
-            signature = "\n".join(" | ".join(row) for row in normalized_rows)
+            signature = _form_markdown_table(normalized_rows)
             if signature in seen_signatures:
                 continue
             seen_signatures.add(signature)
@@ -940,7 +953,7 @@ class DocumentExtractor:
 
             headers = rows[0] if rows else []
             body = rows[1:] if len(rows) > 1 else []
-            raw_text = "\n".join(" | ".join(cell for cell in row) for row in rows if any(cell for cell in row))
+            raw_text = _form_markdown_table(rows)
             if not raw_text.strip():
                 continue
             extracted_tables.append(
@@ -1040,7 +1053,7 @@ class DocumentExtractor:
                     for row in json.loads(rows_json)
                 ]
                 headers, data_rows = _normalize_power_query_table(headers, data_rows)
-                raw_text = "\n".join(" | ".join(cell for cell in row) for row in [headers, *data_rows] if any(row))
+                raw_text = _form_markdown_table([headers, *data_rows])
                 if not headers and not data_rows:
                     continue
                 extracted_tables.append(
@@ -1319,8 +1332,8 @@ class DocumentExtractor:
                     headers=rows[0],
                     rows=rows[1:] if len(rows) > 1 else [],
                     import_headers=list(rows[0]),
-                    source_text="\n".join(" | ".join(cell for cell in row) for row in rows),
-                    raw_text="\n".join(" | ".join(cell for cell in row) for row in rows),
+                    source_text=_form_markdown_table(rows),
+                    raw_text=_form_markdown_table(rows),
                     confidence=0.85,
                 )
             )

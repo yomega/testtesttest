@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 
+from src.pdf_spec_app import extractor
+
 from .models import ExtractedSegment, ExtractedTable, TableSchema
 
 
@@ -359,10 +361,7 @@ def _logical_column_start(row: list[str], start_index: int, schema: TableSchema)
 
 
 def _rebuild_raw_text(headers: list[str], rows: list[list[str]]) -> str:
-    lines = [" | ".join(headers)] if headers else []
-    lines.extend(" | ".join(row) for row in rows)
-    return "\n".join(lines)
-
+    return extractor._form_markdown_table([headers, *rows])
 
 def _find_best_partial_header_row(
     row_sets: list[tuple[str, list[list[str]], int]],
@@ -605,13 +604,11 @@ def _build_header_only_reflowed_table(
     if not headers:
         return None
     rows = data_rows if data_rows else table.rows
-    lines = [" | ".join(headers)]
-    lines.extend(" | ".join(row) for row in rows if row)
     return replace(
         table,
         headers=headers,
         rows=rows,
-        raw_text="\n".join(lines),
+        raw_text=extractor._form_markdown_table([headers, *rows]),
         confidence=min(1.0, table.confidence + 0.03),
         header_source=header_source,
     )

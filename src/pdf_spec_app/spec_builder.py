@@ -93,7 +93,7 @@ class SpecificationBuilder:
                     evidence=[
                         EvidenceItem(
                             page_number=table.page_number,
-                            excerpt=table.raw_text[:400] or ", ".join(table.headers),
+                            excerpt=table.raw_text or ", ".join(table.headers),
                             confidence=table.confidence,
                             source_type="table",
                         )

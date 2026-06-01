@@ -96,6 +96,15 @@ class EvidenceItem:
     confidence: float
     source_type: str
 
+    def to_formatted_string(self) -> str:
+        """
+        Returns a formatted string representation of the EvidenceItem.
+        """
+        return (
+            f"  Page {self.page_number} | {self.source_type} | "
+            f"{self.confidence:.2f} |\n{self.excerpt}"
+        )
+
 
 @dataclass(slots=True)
 class SpecStatement:

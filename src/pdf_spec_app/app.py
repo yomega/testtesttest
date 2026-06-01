@@ -853,10 +853,7 @@ class App(tk.Tk):
                 suffix = "" if statement.status == "supported" else f" [{statement.status.upper()}]"
                 lines.append(f"* {statement.text}{suffix}")
                 for evidence in statement.evidence:
-                    lines.append(
-                        f"  Page {evidence.page_number} | {evidence.source_type} | "
-                        f"{evidence.confidence:.2f} | {evidence.excerpt}"
-                    )
+                    lines.append(evidence.to_formatted_string())
             lines.append("")
         return "\n".join(lines)
 
