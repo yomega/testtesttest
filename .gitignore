@@ -1,1 +1,2 @@
-src/pdf_spec_app/__pycache__/__init__.cpython-313.pyc
+*.pyc
+*.~*
