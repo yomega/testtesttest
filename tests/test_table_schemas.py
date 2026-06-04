@@ -6,6 +6,7 @@ from src.pdf_spec_app.app import App, TableRegionSelectorDialog, default_table_s
 import src.pdf_spec_app.extractor as extractor_module
 from src.pdf_spec_app.extractor import (
     DocumentExtractor,
+    _describe_pdfplumber_revision_usage,
     _group_manual_table_regions_by_page,
     _infer_tables_from_text,
     _split_evaluation_warnings,
@@ -294,6 +295,25 @@ class TableSchemaTests(unittest.TestCase):
 
         self.assertTrue(extract_tables_calls)
         self.assertEqual(extract_tables_calls[0], ((), {}))
+
+    def test_pdfplumber_revision_detection_prefers_latest_revision_chain(self) -> None:
+        fake_pdf = SimpleNamespace(
+            doc=SimpleNamespace(
+                xrefs=[
+                    SimpleNamespace(trailer={"Prev": 120}),
+                    SimpleNamespace(trailer={}),
+                ]
+            )
+        )
+
+        description = _describe_pdfplumber_revision_usage(fake_pdf)
+
+        self.assertEqual(description["pdf_revision_count"], "2")
+        self.assertEqual(description["pdf_has_incremental_updates"], "True")
+        self.assertEqual(
+            description["pdf_revision_resolution"],
+            "latest_revision_only_via_pdfminer_xref_chain",
+        )
 
     def test_schema_match_prefers_required_columns(self) -> None:
         table = ExtractedTable(
