@@ -379,33 +379,35 @@ class PdfPlumberBackendMixin:
         seen_signatures: set[str] = set()
         table_settings = _pdfplumber_table_settings(options)
 
+        found_tables: list[Any] = []
         if table_settings is None:
             try:
-                extracted_tables = page.extract_tables() or []
+                found_tables = page.find_tables() or []
             except Exception:
-                extracted_tables = []
+                found_tables = []
         else:
             try:
-                extracted_tables = page.extract_tables(table_settings=table_settings) or []
+                found_tables = page.find_tables(table_settings=table_settings) or []
             except TypeError:
-                extracted_tables = page.extract_tables(table_settings) or []
+                found_tables = page.find_tables(table_settings) or []
             except Exception:
-                extracted_tables = []
+                found_tables = []
 
-        if not extracted_tables:
+        if found_tables:
+            extracted_tables = [table.extract(**((table_settings or {}).get("text_settings") or {})) for table in found_tables]
+        else:
             if table_settings is None:
                 try:
-                    found_tables = page.find_tables() or []
+                    extracted_tables = page.extract_tables() or []
                 except Exception:
-                    found_tables = []
+                    extracted_tables = []
             else:
                 try:
-                    found_tables = page.find_tables(table_settings=table_settings) or []
+                    extracted_tables = page.extract_tables(table_settings=table_settings) or []
                 except TypeError:
-                    found_tables = page.find_tables(table_settings) or []
+                    extracted_tables = page.extract_tables(table_settings) or []
                 except Exception:
-                    found_tables = []
-            extracted_tables = [table.extract(**((table_settings or {}).get("text_settings") or {})) for table in found_tables]
+                    extracted_tables = []
 
         for extracted_rows in extracted_tables:
             normalized_rows = _normalize_extracted_rows(extracted_rows)

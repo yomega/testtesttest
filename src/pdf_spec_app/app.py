@@ -57,6 +57,7 @@ class App(tk.Tk):
         self.pdfplumber_text_x_tolerance_var = tk.IntVar(value=self.extraction_options.pdfplumber_text_x_tolerance)
         self.pdfplumber_text_y_tolerance_var = tk.IntVar(value=self.extraction_options.pdfplumber_text_y_tolerance)
         self.pdfplumber_debug_photoimages: list[ImageTk.PhotoImage] = []
+        self.pdfplumber_page_photoimages: list[ImageTk.PhotoImage] = []
         self._pdfplumber_debug_refresh_after_id: str | None = None
         self.pdfplumber_text_x_max = DEFAULT_PDFPLUMBER_TOLERANCE_MAX
         self.pdfplumber_text_y_max = DEFAULT_PDFPLUMBER_TOLERANCE_MAX
@@ -301,11 +302,13 @@ class App(tk.Tk):
 
         spec_tab = ttk.Frame(self.preview_notebook)
         import_tab = ttk.Frame(self.preview_notebook)
+        pdfplumber_pages_tab = ttk.Frame(self.preview_notebook)
         pdfplumber_debug_tab = ttk.Frame(self.preview_notebook)
         raw_tables_tab = ttk.Frame(self.preview_notebook)
         processed_tables_tab = ttk.Frame(self.preview_notebook)
         self.preview_notebook.add(spec_tab, text="Spec Preview")
         self.preview_notebook.add(import_tab, text="Raw Import Text")
+        self.preview_notebook.add(pdfplumber_pages_tab, text="pdfplumber Pages")
         self.preview_notebook.add(pdfplumber_debug_tab, text="pdfplumber Tablefinder")
         self.preview_notebook.add(raw_tables_tab, text="Raw Tables Debug")
         self.preview_notebook.add(processed_tables_tab, text="Processed Tabled Debug")
@@ -324,6 +327,33 @@ class App(tk.Tk):
 
         self.raw_import = tk.Text(import_tab, wrap="none")
         self.raw_import.pack(fill=tk.BOTH, expand=True)
+
+        self.pdfplumber_page_canvas = tk.Canvas(pdfplumber_pages_tab, highlightthickness=0)
+        self.pdfplumber_page_scrollbar = ttk.Scrollbar(
+            pdfplumber_pages_tab,
+            orient=tk.VERTICAL,
+            command=self.pdfplumber_page_canvas.yview,
+        )
+        self.pdfplumber_page_canvas.configure(yscrollcommand=self.pdfplumber_page_scrollbar.set)
+        self.pdfplumber_page_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.pdfplumber_page_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.pdfplumber_page_container = ttk.Frame(self.pdfplumber_page_canvas)
+        self.pdfplumber_page_canvas.create_window((0, 0), window=self.pdfplumber_page_container, anchor="nw")
+        self.pdfplumber_page_container.bind(
+            "<Configure>",
+            lambda _event: self.pdfplumber_page_canvas.configure(
+                scrollregion=self.pdfplumber_page_canvas.bbox("all")
+            ),
+        )
+        self.pdfplumber_page_canvas.bind("<MouseWheel>", self._on_pdfplumber_page_mousewheel)
+        self.pdfplumber_page_canvas.bind("<Button-4>", self._on_pdfplumber_page_mousewheel_linux)
+        self.pdfplumber_page_canvas.bind("<Button-5>", self._on_pdfplumber_page_mousewheel_linux)
+        self.pdfplumber_page_scrollbar.bind("<MouseWheel>", self._on_pdfplumber_page_mousewheel)
+        self.pdfplumber_page_scrollbar.bind("<Button-4>", self._on_pdfplumber_page_mousewheel_linux)
+        self.pdfplumber_page_scrollbar.bind("<Button-5>", self._on_pdfplumber_page_mousewheel_linux)
+        self.pdfplumber_page_container.bind("<MouseWheel>", self._on_pdfplumber_page_mousewheel)
+        self.pdfplumber_page_container.bind("<Button-4>", self._on_pdfplumber_page_mousewheel_linux)
+        self.pdfplumber_page_container.bind("<Button-5>", self._on_pdfplumber_page_mousewheel_linux)
 
         self.pdfplumber_debug_canvas = tk.Canvas(pdfplumber_debug_tab, highlightthickness=0)
         self.pdfplumber_debug_scrollbar = ttk.Scrollbar(
@@ -483,6 +513,7 @@ class App(tk.Tk):
         self.status_var.set("Starting specification generation...")
         self.preview.delete("1.0", tk.END)
         self.raw_import.delete("1.0", tk.END)
+        self._clear_pdfplumber_page_view()
         self._clear_pdfplumber_debug_view()
         self.raw_debug_tables.delete("1.0", tk.END)
         self.debug_tables.delete("1.0", tk.END)
@@ -525,6 +556,7 @@ class App(tk.Tk):
                     self._update_pdfplumber_slider_bounds(self.source_document)
                     self.preview.insert(tk.END, self._render_spec_preview(self.specification))
                     self._refresh_raw_import_view()
+                    self._refresh_pdfplumber_page_view()
                     self._refresh_pdfplumber_debug_view()
                     self.raw_debug_tables.insert(tk.END, self._render_table_debug(self.source_document, processed=False))
                     self.debug_tables.insert(tk.END, self._render_table_debug(self.source_document, processed=True))
@@ -853,12 +885,25 @@ class App(tk.Tk):
             child.destroy()
         self.pdfplumber_debug_photoimages = []
 
+    def _clear_pdfplumber_page_view(self) -> None:
+        for child in self.pdfplumber_page_container.winfo_children():
+            child.destroy()
+        self.pdfplumber_page_photoimages = []
+
     def _on_pdfplumber_debug_mousewheel(self, event: tk.Event) -> str:
         delta = getattr(event, "delta", 0)
         if delta == 0:
             return "break"
         step = -1 if delta > 0 else 1
         self.pdfplumber_debug_canvas.yview_scroll(step, "units")
+        return "break"
+
+    def _on_pdfplumber_page_mousewheel(self, event: tk.Event) -> str:
+        delta = getattr(event, "delta", 0)
+        if delta == 0:
+            return "break"
+        step = -1 if delta > 0 else 1
+        self.pdfplumber_page_canvas.yview_scroll(step, "units")
         return "break"
 
     def _on_pdfplumber_debug_mousewheel_linux(self, event: tk.Event) -> str:
@@ -868,6 +913,64 @@ class App(tk.Tk):
         elif num == 5:
             self.pdfplumber_debug_canvas.yview_scroll(1, "units")
         return "break"
+
+    def _on_pdfplumber_page_mousewheel_linux(self, event: tk.Event) -> str:
+        num = getattr(event, "num", 0)
+        if num == 4:
+            self.pdfplumber_page_canvas.yview_scroll(-1, "units")
+        elif num == 5:
+            self.pdfplumber_page_canvas.yview_scroll(1, "units")
+        return "break"
+
+    def _refresh_pdfplumber_page_view(self) -> None:
+        self._clear_pdfplumber_page_view()
+        if self.source_document is None:
+            label = ttk.Label(
+                self.pdfplumber_page_container,
+                text="No pdfplumber page images are available for this document.",
+            )
+            label.pack(anchor="w", padx=8, pady=8)
+            label.bind("<MouseWheel>", self._on_pdfplumber_page_mousewheel)
+            label.bind("<Button-4>", self._on_pdfplumber_page_mousewheel_linux)
+            label.bind("<Button-5>", self._on_pdfplumber_page_mousewheel_linux)
+            return
+
+        if not self.source_document.page_preview_images and self.selected_file is not None and self.selected_file.suffix.lower() == ".pdf":
+            try:
+                self.source_document.page_preview_images = self.pipeline.extractor.generate_pdf_page_previews(
+                    self.selected_file
+                )
+            except Exception:
+                pass
+
+        if not self.source_document.page_preview_images:
+            label = ttk.Label(
+                self.pdfplumber_page_container,
+                text="No pdfplumber to_image page renders are available for this document.",
+            )
+            label.pack(anchor="w", padx=8, pady=8)
+            label.bind("<MouseWheel>", self._on_pdfplumber_page_mousewheel)
+            label.bind("<Button-4>", self._on_pdfplumber_page_mousewheel_linux)
+            label.bind("<Button-5>", self._on_pdfplumber_page_mousewheel_linux)
+            return
+
+        for preview in self.source_document.page_preview_images:
+            page_label = ttk.Label(
+                self.pdfplumber_page_container,
+                text=f"Page {preview.page_number}",
+            )
+            page_label.pack(anchor="w", padx=8, pady=(8, 4))
+            page_label.bind("<MouseWheel>", self._on_pdfplumber_page_mousewheel)
+            page_label.bind("<Button-4>", self._on_pdfplumber_page_mousewheel_linux)
+            page_label.bind("<Button-5>", self._on_pdfplumber_page_mousewheel_linux)
+            image = Image.open(BytesIO(preview.image_bytes))
+            photo = ImageTk.PhotoImage(image)
+            self.pdfplumber_page_photoimages.append(photo)
+            image_label = ttk.Label(self.pdfplumber_page_container, image=photo)
+            image_label.pack(anchor="w", padx=8, pady=(0, 12))
+            image_label.bind("<MouseWheel>", self._on_pdfplumber_page_mousewheel)
+            image_label.bind("<Button-4>", self._on_pdfplumber_page_mousewheel_linux)
+            image_label.bind("<Button-5>", self._on_pdfplumber_page_mousewheel_linux)
 
     def _refresh_pdfplumber_debug_view(self) -> None:
         self._clear_pdfplumber_debug_view()
