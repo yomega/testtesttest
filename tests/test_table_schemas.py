@@ -13,6 +13,7 @@ from src.pdf_spec_app.extractor import (
 )
 from src.pdf_spec_app.models import (
     ExtractedTable,
+    ExtractedSegment,
     ExtractionOptions,
     ManualTableRegion,
     PagePreviewImage,
@@ -23,6 +24,7 @@ from src.pdf_spec_app.models import (
     TableSchema,
 )
 from src.pdf_spec_app.pipeline import ProcessingPipeline
+from src.pdf_spec_app.spec_builder import SpecificationBuilder
 from src.pdf_spec_app.table_schemas import match_table_schema, rank_tables_by_schema, reflow_table_to_schema
 
 
@@ -153,6 +155,34 @@ class TableSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual([segment.page_number for segment in segments], [1, 3])
+        self.assertTrue(all(segment.segment_type == "ocr_disabled" for segment in segments))
+
+    def test_disabled_full_document_ocr_returns_page_placeholders(self) -> None:
+        original_pypdfium2 = extractor_module.pypdfium2
+
+        class FakePdfDocument:
+            def __init__(self, _path: str) -> None:
+                self._length = 2
+
+            def __len__(self) -> int:
+                return self._length
+
+            def close(self) -> None:
+                return None
+
+        extractor_module.pypdfium2 = SimpleNamespace(PdfDocument=FakePdfDocument)
+        try:
+            segments = DocumentExtractor()._extract_pdf_pages_with_local_ocr(
+                Path("sample.pdf"),
+                None,
+                "disabled",
+                "eng",
+                None,
+            )
+        finally:
+            extractor_module.pypdfium2 = original_pypdfium2
+
+        self.assertEqual([segment.page_number for segment in segments], [1, 2])
         self.assertTrue(all(segment.segment_type == "ocr_disabled" for segment in segments))
 
     def test_extraction_options_can_use_ocr_only_mode(self) -> None:
@@ -867,6 +897,53 @@ class TableSchemaTests(unittest.TestCase):
 
         self.assertIn("Evaluation Warnings", preview)
         self.assertIn("Real content", preview)
+
+    def test_spec_builder_keeps_full_segment_text_without_truncation(self) -> None:
+        segment_one_text = "Alpha " * 120
+        segment_two_text = "Omega " * 120
+        document = SourceDocument(
+            path=Path("sample.pdf"),
+            title="Sample",
+            segments=[
+                ExtractedSegment(page_number=1, text=segment_one_text.strip(), confidence=0.9),
+                ExtractedSegment(page_number=2, text=segment_two_text.strip(), confidence=0.85),
+            ],
+        )
+
+        specification = SpecificationBuilder().build(document)
+        preview = App._render_spec_preview(specification)
+
+        self.assertIn(segment_one_text.strip(), preview)
+        self.assertIn(segment_two_text.strip(), preview)
+        functional_notes = next(section for section in specification.sections if section.title == "Functional Notes")
+        self.assertEqual(len(functional_notes.statements), 2)
+
+    def test_document_summary_reports_structure_metrics_instead_of_raw_text(self) -> None:
+        raw_text = (
+            "1. Overview\n\n"
+            "SYSTEM REQUIREMENTS\n\n"
+            "This document describes the valve control workflow.\n\n"
+            "Installation Notes\n\n"
+            "Additional operational detail is captured here."
+        )
+        document = SourceDocument(
+            path=Path("sample.pdf"),
+            title="Sample",
+            raw_import_text=raw_text,
+            segments=[
+                ExtractedSegment(page_number=1, text=raw_text, confidence=0.95, segment_type="pdf_text"),
+            ],
+        )
+
+        specification = SpecificationBuilder().build(document)
+        summary_section = next(section for section in specification.sections if section.title == "Document Summary")
+        summary_text = summary_section.statements[0].text
+
+        self.assertIn("page(s)", summary_text)
+        self.assertIn("word(s)", summary_text)
+        self.assertIn("paragraph block(s)", summary_text)
+        self.assertIn("header-like line(s)", summary_text)
+        self.assertNotIn("This document describes the valve control workflow.", summary_text)
 
     def test_processed_tables_debug_renders_extracted_tables(self) -> None:
         source_document = type(

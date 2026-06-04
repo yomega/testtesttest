@@ -18,6 +18,7 @@ class TableSchema:
 
 @dataclass(slots=True)
 class ExtractionOptions:
+    ignore_tables: bool = False
     extract_tables: bool = True
     table_extraction_backend: str = "pdfplumber"
     pdfplumber_use_default_table_settings: bool = False

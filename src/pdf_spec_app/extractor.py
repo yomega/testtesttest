@@ -913,10 +913,9 @@ class DocumentExtractor:
     def _extract_spire_page_text(self, page: Any) -> str:
         text_extractor = self._spire_attr("PdfTextExtractor")(page)
         extract_options = self._spire_attr("PdfTextExtractOptions")()
+        extract_options.IsShowHiddenText = False
         if hasattr(extract_options, "IsExtractAllText"):
-            extract_options.IsExtractAllText = True
-        if hasattr(extract_options, "IsShowHiddenText"):
-            extract_options.IsShowHiddenText = False
+            extract_options.IsExtractAllText = True            
         return (text_extractor.ExtractText(extract_options) or "").strip()
 
     def _extract_spire_tables(
@@ -1254,7 +1253,24 @@ class DocumentExtractor:
         ocr_language: str,
         progress_callback: ProgressCallback | None = None,
     ) -> list[ExtractedSegment]:
-        target_page_indices = page_indices or []
+        target_page_indices = page_indices
+
+        page_count = 0
+        if page_indices is None:
+            try:
+                preview_pdf = pypdfium2.PdfDocument(str(path)) if pypdfium2 is not None else None
+            except Exception:
+                preview_pdf = None
+            if preview_pdf is not None:
+                try:
+                    page_count = len(preview_pdf)
+                finally:
+                    preview_pdf.close()
+            target_page_indices = list(range(page_count)) if page_count > 0 else []
+
+        if target_page_indices is None:
+            target_page_indices = []
+
         if ocr_backend == "disabled":
             return [
                 ExtractedSegment(

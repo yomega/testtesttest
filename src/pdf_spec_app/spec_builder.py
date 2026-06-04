@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .models import EvidenceItem, SourceDocument, SpecSection, SpecStatement, Specification
 
 
@@ -25,34 +27,72 @@ class SpecificationBuilder:
         )
 
     def _build_summary(self, document: SourceDocument) -> SpecStatement:
+        all_text = document.raw_import_text or "\n\n".join(segment.text for segment in document.segments if segment.text)
+        nonempty_lines = [line.strip() for line in all_text.splitlines() if line.strip()]
+        paragraphs = [block.strip() for block in re.split(r"\n\s*\n", all_text) if block.strip()]
+        page_refs = sorted(
+            {
+                *(segment.page_number for segment in document.segments),
+                *(table.page_number for table in document.tables),
+                *(table.page_number for table in document.raw_tables),
+            }
+        )
+        word_count = len(re.findall(r"\S+", all_text))
+        line_count = len(nonempty_lines)
+        paragraph_count = len(paragraphs)
+        header_like_count = sum(1 for line in nonempty_lines if self._looks_like_heading(line))
+        numbered_section_count = sum(1 for line in nonempty_lines if re.match(r"^\d+(?:\.\d+)*[\).\s-]+\S", line))
+        page_count = len(page_refs)
         segment_count = len(document.segments)
-        page_refs = sorted({segment.page_number for segment in document.segments})
-        text = f"Imported document contains {segment_count} extracted text segments across pages {page_refs}."
+        table_count = len(document.tables)
+
+        text = (
+            "Imported document structure summary: "
+            f"{page_count} page(s), {word_count} word(s), {paragraph_count} paragraph block(s), "
+            f"{line_count} non-empty line(s), {segment_count} extracted text segment(s), "
+            f"{table_count} detected table(s), approximately {header_like_count} header-like line(s), "
+            f"and approximately {numbered_section_count} numbered section marker(s)."
+        )
         evidence = [
             EvidenceItem(
-                page_number=segment.page_number,
-                excerpt=segment.text[:280],
-                confidence=segment.confidence,
-                source_type=segment.segment_type,
-            )
-            for segment in document.segments[:3]
+                page_number=page_refs[0] if page_refs else 1,
+                excerpt=(
+                    f"Pages: {page_refs or [1]}; "
+                    f"Words: {word_count}; "
+                    f"Paragraphs: {paragraph_count}; "
+                    f"Lines: {line_count}; "
+                    f"Text segments: {segment_count}; "
+                    f"Tables: {table_count}"
+                ),
+                confidence=0.95,
+                source_type="document_metrics",
+            ),
+            EvidenceItem(
+                page_number=page_refs[0] if page_refs else 1,
+                excerpt=(
+                    f"Header-like lines (heuristic): {header_like_count}; "
+                    f"Numbered section markers (heuristic): {numbered_section_count}"
+                ),
+                confidence=0.7,
+                source_type="document_structure",
+            ),
         ]
         return SpecStatement(text=text, evidence=evidence, confidence=0.95)
 
     def _build_requirement_candidates(self, document: SourceDocument) -> list[SpecStatement]:
         statements: list[SpecStatement] = []
-        for segment in document.segments[:10]:
+        for segment in document.segments:
             cleaned = " ".join(segment.text.split())
             if not cleaned:
                 continue
-            text = f"Source text captured from page {segment.page_number}: {cleaned[:400]}"
+            text = f"Source text captured from page {segment.page_number}: {cleaned}"
             statements.append(
                 SpecStatement(
                     text=text,
                     evidence=[
                         EvidenceItem(
                             page_number=segment.page_number,
-                            excerpt=cleaned[:400],
+                            excerpt=cleaned,
                             confidence=segment.confidence,
                             source_type=segment.segment_type,
                         )
@@ -131,3 +171,31 @@ class SpecificationBuilder:
                 )
             )
         return questions
+
+    @staticmethod
+    def _looks_like_heading(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped:
+            return False
+        if len(stripped) > 120:
+            return False
+        if re.match(r"^\d+(?:\.\d+)*[\).\s-]+\S", stripped):
+            return True
+        letters = [character for character in stripped if character.isalpha()]
+        uppercase_ratio = (
+            sum(1 for character in letters if character.isupper()) / len(letters)
+            if letters
+            else 0.0
+        )
+        if uppercase_ratio >= 0.8 and len(stripped.split()) <= 12:
+            return True
+        title_case_words = [
+            word
+            for word in re.split(r"\s+", stripped)
+            if word and any(character.isalpha() for character in word)
+        ]
+        if title_case_words and len(title_case_words) <= 10:
+            capitalized = sum(1 for word in title_case_words if word[:1].isupper())
+            if capitalized / len(title_case_words) >= 0.8:
+                return True
+        return False

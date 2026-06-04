@@ -35,6 +35,13 @@ class ProcessingPipeline:
         self._report(progress_callback, 0.0, "Starting specification generation...")
         document = self.extractor.extract(file_path, extraction_options, progress_callback)
         self.last_document = document
+        if extraction_options is not None and extraction_options.ignore_tables:
+            document.raw_tables = []
+            document.tables = []
+            self._report(progress_callback, 90.0, "Building specification draft...")
+            specification = self.builder.build(document)
+            self._report(progress_callback, 100.0, "Specification generated.")
+            return specification
         schemas = table_schemas or []
         document.raw_tables = deepcopy(document.tables)
         self._report(progress_callback, 80.0, "Ranking detected tables...")

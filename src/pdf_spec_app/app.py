@@ -50,6 +50,7 @@ class App(tk.Tk):
         self.is_generating = False
         self.schema_pane_width = DEFAULT_SCHEMA_PANE_WIDTH
         self.raw_import_whitespace_mode = tk.BooleanVar(value=False)
+        self.ignore_tables_var = tk.BooleanVar(value=self.extraction_options.ignore_tables)
         self.pdfplumber_use_defaults_var = tk.BooleanVar(value=self.extraction_options.pdfplumber_use_default_table_settings)
         self.pdfplumber_vertical_strategy_var = tk.StringVar(value=self.extraction_options.pdfplumber_vertical_strategy)
         self.pdfplumber_horizontal_strategy_var = tk.StringVar(value=self.extraction_options.pdfplumber_horizontal_strategy)
@@ -87,10 +88,6 @@ class App(tk.Tk):
 
         self.import_button = ttk.Button(controls, text="Import File", command=self.import_file)
         self.import_button.pack(side=tk.LEFT, padx=(0, 8))
-        self.schema_button = ttk.Button(controls, text="Add Table Schema", command=self.add_table_schema)
-        self.schema_button.pack(side=tk.LEFT, padx=(0, 8))
-        self.edit_schema_button = ttk.Button(controls, text="Edit Table Schema", command=self.edit_table_schema)
-        self.edit_schema_button.pack(side=tk.LEFT, padx=(0, 8))
         self.region_button = ttk.Button(controls, text="Select Table Regions", command=self.select_table_regions)
         self.region_button.pack(side=tk.LEFT, padx=(0, 8))
         self.generate_button = ttk.Button(controls, text="Regenerate Spec", command=self.generate_spec)
@@ -133,14 +130,7 @@ class App(tk.Tk):
             padx=(8, 0),
         )
 
-        self.extract_tables_var = tk.BooleanVar(value=self.extraction_options.extract_tables)
-        ttk.Checkbutton(
-            settings_frame,
-            text="Extract tables",
-            variable=self.extract_tables_var,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-        ttk.Label(settings_frame, text="Extraction backend").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(settings_frame, text="Extraction backend").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.table_backend_var = tk.StringVar(
             value=TABLE_BACKEND_LABELS_BY_VALUE.get(self.extraction_options.table_extraction_backend, "pdfplumber")
         )
@@ -152,7 +142,7 @@ class App(tk.Tk):
             width=32,
         )
         self.table_backend_combo.grid(
-            row=2,
+            row=1,
             column=1,
             sticky="ew",
             padx=(8, 0),
@@ -167,10 +157,10 @@ class App(tk.Tk):
             variable=self.pdfplumber_use_defaults_var,
             command=self._on_pdfplumber_defaults_changed,
         )
-        self.pdfplumber_defaults_check.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.pdfplumber_defaults_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         self.pdfplumber_vertical_label = ttk.Label(settings_frame, text="pdfplumber vertical")
-        self.pdfplumber_vertical_label.grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self.pdfplumber_vertical_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
         self.pdfplumber_vertical_combo = ttk.Combobox(
             settings_frame,
             textvariable=self.pdfplumber_vertical_strategy_var,
@@ -179,7 +169,7 @@ class App(tk.Tk):
             width=32,
         )
         self.pdfplumber_vertical_combo.grid(
-            row=4,
+            row=3,
             column=1,
             sticky="ew",
             padx=(8, 0),
@@ -189,7 +179,7 @@ class App(tk.Tk):
         self.pdfplumber_vertical_combo.bind("<<ComboboxSelected>>", self._on_pdfplumber_defaults_changed)
 
         self.pdfplumber_text_x_label = ttk.Label(settings_frame, text="pdfplumber text_x_tolerance")
-        self.pdfplumber_text_x_label.grid(row=5, column=0, sticky="w", pady=(8, 0))
+        self.pdfplumber_text_x_label.grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.pdfplumber_text_x_scale = tk.Scale(
             settings_frame,
             from_=1,
@@ -200,7 +190,7 @@ class App(tk.Tk):
             showvalue=True,
         )
         self.pdfplumber_text_x_scale.grid(
-            row=5,
+            row=4,
             column=1,
             sticky="ew",
             padx=(8, 0),
@@ -208,7 +198,7 @@ class App(tk.Tk):
         )
 
         self.pdfplumber_horizontal_label = ttk.Label(settings_frame, text="pdfplumber horizontal")
-        self.pdfplumber_horizontal_label.grid(row=6, column=0, sticky="w", pady=(8, 0))
+        self.pdfplumber_horizontal_label.grid(row=5, column=0, sticky="w", pady=(8, 0))
         self.pdfplumber_horizontal_combo = ttk.Combobox(
             settings_frame,
             textvariable=self.pdfplumber_horizontal_strategy_var,
@@ -217,7 +207,7 @@ class App(tk.Tk):
             width=32,
         )
         self.pdfplumber_horizontal_combo.grid(
-            row=6,
+            row=5,
             column=1,
             sticky="ew",
             padx=(8, 0),
@@ -227,7 +217,7 @@ class App(tk.Tk):
         self.pdfplumber_horizontal_combo.bind("<<ComboboxSelected>>", self._on_pdfplumber_defaults_changed)
 
         self.pdfplumber_text_y_label = ttk.Label(settings_frame, text="pdfplumber text_y_tolerance")
-        self.pdfplumber_text_y_label.grid(row=7, column=0, sticky="w", pady=(8, 0))
+        self.pdfplumber_text_y_label.grid(row=6, column=0, sticky="w", pady=(8, 0))
         self.pdfplumber_text_y_scale = tk.Scale(
             settings_frame,
             from_=1,
@@ -238,14 +228,14 @@ class App(tk.Tk):
             showvalue=True,
         )
         self.pdfplumber_text_y_scale.grid(
-            row=7,
+            row=6,
             column=1,
             sticky="ew",
             padx=(8, 0),
             pady=(8, 0),
         )
 
-        ttk.Label(settings_frame, text="OCR backend").grid(row=8, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(settings_frame, text="OCR backend").grid(row=7, column=0, sticky="w", pady=(8, 0))
         self.ocr_backend_var = tk.StringVar(
             value=OCR_BACKEND_LABELS_BY_VALUE.get(self.extraction_options.ocr_backend, "Tesseract OCR Fallback")
         )
@@ -257,17 +247,17 @@ class App(tk.Tk):
             width=32,
         )
         self.ocr_backend_combo.grid(
-            row=8,
+            row=7,
             column=1,
             sticky="ew",
             padx=(8, 0),
             pady=(8, 0),
         )
 
-        ttk.Label(settings_frame, text="OCR language").grid(row=9, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(settings_frame, text="OCR language").grid(row=8, column=0, sticky="w", pady=(8, 0))
         self.ocr_language_var = tk.StringVar(value=self.extraction_options.ocr_language)
         ttk.Entry(settings_frame, textvariable=self.ocr_language_var, width=32).grid(
-            row=9,
+            row=8,
             column=1,
             sticky="ew",
             padx=(8, 0),
@@ -279,10 +269,32 @@ class App(tk.Tk):
         self.ocr_backend_var.trace_add("write", self._on_ocr_backend_changed)
         self._on_ocr_backend_changed()
 
+        schema_controls = ttk.Frame(self.left_frame)
+        schema_controls.pack(fill=tk.X, pady=(0, 8))
+
+        self.ignore_tables_check = ttk.Checkbutton(
+            schema_controls,
+            text="Ignore Tables",
+            variable=self.ignore_tables_var,
+            command=self._on_ignore_tables_changed,
+        )
+        self.ignore_tables_check.pack(side=tk.LEFT, padx=(0, 8))
+        self.schema_button = ttk.Button(schema_controls, text="Add Schema", command=self.add_table_schema)
+        self.schema_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.edit_schema_button = ttk.Button(schema_controls, text="Edit Schema", command=self.edit_table_schema)
+        self.edit_schema_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.remove_schema_button = ttk.Button(
+            schema_controls,
+            text="Remove Schema",
+            command=self.remove_table_schema,
+        )
+        self.remove_schema_button.pack(side=tk.LEFT)
+
         self.schema_list = tk.Listbox(self.left_frame, height=12)
         self.schema_list.pack(fill=tk.BOTH, expand=True)
         self.schema_list.bind("<Double-Button-1>", self._on_schema_double_click)
         self._populate_schema_list()
+        self._on_ignore_tables_changed()
 
         self.preview_notebook = ttk.Notebook(self.right_frame)
         self.preview_notebook.pack(fill=tk.BOTH, expand=True)
@@ -390,7 +402,26 @@ class App(tk.Tk):
         self.schema_list.selection_set(index)
         self.status_var.set(f"Updated schema: {dialog.result.name}")
 
+    def remove_table_schema(self) -> None:
+        selected = self.schema_list.curselection()
+        if not selected:
+            messagebox.showwarning("No schema selected", "Select a table schema to remove.")
+            return
+
+        index = int(selected[0])
+        schema = self.table_schemas[index]
+        if not messagebox.askyesno("Remove schema", f"Remove schema '{schema.name}'?"):
+            return
+
+        del self.table_schemas[index]
+        self._populate_schema_list()
+        self.status_var.set(f"Removed schema: {schema.name}")
+
     def select_table_regions(self) -> None:
+        if self.ignore_tables_var.get():
+            messagebox.showwarning("Tables ignored", "Turn off 'Ignore Tables' before selecting table regions.")
+            return
+
         if self.selected_file is None or self.selected_file.suffix.lower() != ".pdf":
             messagebox.showwarning("PDF required", "Import a PDF document before selecting table regions.")
             return
@@ -538,8 +569,10 @@ class App(tk.Tk):
         messagebox.showinfo("Export complete", f"Specification exported to:\n{output}")
 
     def _sync_extraction_options(self) -> None:
+        ignore_tables = self.ignore_tables_var.get()
         self.extraction_options = ExtractionOptions(
-            extract_tables=self.extract_tables_var.get(),
+            ignore_tables=ignore_tables,
+            extract_tables=not ignore_tables,
             table_extraction_backend=TABLE_BACKEND_LABELS.get(self.table_backend_var.get().strip(), "pdfplumber"),
             pdfplumber_use_default_table_settings=self.pdfplumber_use_defaults_var.get(),
             pdfplumber_vertical_strategy=self.pdfplumber_vertical_strategy_var.get().strip() or "lines",
@@ -550,6 +583,26 @@ class App(tk.Tk):
             ocr_language=self.ocr_language_var.get().strip() or "eng",
             manual_table_regions=list(self.manual_table_regions),
         )
+
+    def _on_ignore_tables_changed(self) -> None:
+        ignore_tables = self.ignore_tables_var.get()
+        schema_state = tk.DISABLED if ignore_tables else tk.NORMAL
+
+        self.schema_button.configure(state=schema_state)
+        self.edit_schema_button.configure(state=schema_state)
+        self.remove_schema_button.configure(state=schema_state)
+        self.schema_list.configure(state=schema_state)
+        self.region_button.configure(state=schema_state if not self.is_generating else tk.DISABLED)
+        self.table_backend_combo.configure(state="readonly" if not self.is_generating else tk.DISABLED)
+        self.ocr_backend_combo.configure(state="readonly" if not self.is_generating else tk.DISABLED)
+
+        self.pdfplumber_defaults_check.configure(state=tk.NORMAL if not self.is_generating else tk.DISABLED)
+        self.pdfplumber_vertical_combo.configure(state="readonly" if not self.is_generating else tk.DISABLED)
+        self.pdfplumber_horizontal_combo.configure(state="readonly" if not self.is_generating else tk.DISABLED)
+        self.pdfplumber_text_x_scale.configure(state=tk.NORMAL if not self.is_generating else tk.DISABLED)
+        self.pdfplumber_text_y_scale.configure(state=tk.NORMAL if not self.is_generating else tk.DISABLED)
+        self._on_table_backend_changed()
+        self._on_pdfplumber_defaults_changed()
 
     def _on_table_backend_changed(self, *_args) -> None:
         is_pdfplumber = TABLE_BACKEND_LABELS.get(self.table_backend_var.get().strip(), "pdfplumber") == "pdfplumber"
@@ -618,22 +671,32 @@ class App(tk.Tk):
 
     def _on_ocr_backend_changed(self, *_args) -> None:
         ocr_backend = OCR_BACKEND_LABELS.get(self.ocr_backend_var.get().strip(), "tesseract")
-        if ocr_backend == "tesseract_only":
+        if self.ignore_tables_var.get():
             self.table_backend_combo.configure(state=tk.DISABLED)
+            self.region_button.configure(state=tk.DISABLED)
+        elif ocr_backend == "tesseract_only":
+            self.table_backend_combo.configure(state=tk.DISABLED)
+            self.region_button.configure(state=tk.DISABLED)
         else:
             self.table_backend_combo.configure(state="readonly")
+            if not self.is_generating:
+                self.region_button.configure(state=tk.NORMAL)
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
         for button in (
             self.import_button,
+            self.ignore_tables_check,
             self.schema_button,
             self.edit_schema_button,
+            self.remove_schema_button,
             self.region_button,
             self.generate_button,
             self.export_button,
         ):
             button.configure(state=state)
+        if enabled:
+            self._on_ignore_tables_changed()
 
     def _apply_schema_pane_width(self) -> None:
         self.update_idletasks()
@@ -892,10 +955,11 @@ class App(tk.Tk):
             "",
         ]
 
-        if processed and source_document.extraction_debug:
+        extraction_debug = getattr(source_document, "extraction_debug", None)
+        if processed and extraction_debug:
             lines.append("Backend settings")
             lines.append("-" * len("Backend settings"))
-            for key, value in source_document.extraction_debug.items():
+            for key, value in extraction_debug.items():
                 lines.append(f"* {key}: {value}")
             lines.append("")
 
