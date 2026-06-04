@@ -8,6 +8,7 @@ from docx import Document as DocxDocument
 
 from .extractor_ocr import OcrBackendMixin
 from .extractor_pdfplumber import PdfPlumberBackendMixin
+from .extractor_pdfplumber import _dedupe_pdfplumber_chars_prefer_latest
 from .extractor_power_query import PowerQueryBackendMixin
 from .extractor_spire import SpireBackendMixin
 from .extractor_support import (

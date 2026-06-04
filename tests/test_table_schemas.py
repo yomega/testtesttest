@@ -6,6 +6,7 @@ from src.pdf_spec_app.app import App, TableRegionSelectorDialog, default_table_s
 import src.pdf_spec_app.extractor as extractor_module
 from src.pdf_spec_app.extractor import (
     DocumentExtractor,
+    _dedupe_pdfplumber_chars_prefer_latest,
     _describe_pdfplumber_revision_usage,
     _group_manual_table_regions_by_page,
     _infer_tables_from_text,
@@ -314,6 +315,19 @@ class TableSchemaTests(unittest.TestCase):
             description["pdf_revision_resolution"],
             "latest_revision_only_via_pdfminer_xref_chain",
         )
+
+    def test_pdfplumber_char_dedupe_prefers_latest_overlapping_revision(self) -> None:
+        chars = [
+            {"text": "A", "x0": 10.0, "doctop": 20.0, "upright": 1},
+            {"text": "B", "x0": 20.0, "doctop": 20.0, "upright": 1},
+            {"text": "A", "x0": 10.1, "doctop": 20.0, "upright": 1, "revision": "new"},
+        ]
+
+        deduped = _dedupe_pdfplumber_chars_prefer_latest(chars, tolerance=1.0)
+
+        self.assertEqual(len(deduped), 2)
+        self.assertEqual(deduped[0].get("revision"), "new")
+        self.assertEqual([char["text"] for char in deduped], ["A", "B"])
 
     def test_schema_match_prefers_required_columns(self) -> None:
         table = ExtractedTable(
@@ -984,6 +998,7 @@ class TableSchemaTests(unittest.TestCase):
                         backend="power_query",
                         matched_schema="partlist",
                         schema_score=1.5,
+                        extraction_box=(10.0, 20.0, 110.0, 220.0),
                     )
                 ],
             },
@@ -993,6 +1008,7 @@ class TableSchemaTests(unittest.TestCase):
 
         self.assertIn("Detected tables: 1", debug_text)
         self.assertIn("Backend: power_query", debug_text)
+        self.assertIn("pdfplumber box: (10.0, 20.0, 110.0, 220.0)", debug_text)
         self.assertIn("Schema match: partlist", debug_text)
         self.assertIn("Valve body", debug_text)
 

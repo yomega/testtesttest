@@ -979,6 +979,8 @@ class App(tk.Tk):
             lines.append(f"Page: {table.page_number}")
             lines.append(f"Confidence: {table.confidence:.2f}")
             lines.append(f"Backend: {getattr(table, 'backend', 'unknown')}")
+            if processed and getattr(table, "extraction_box", None):
+                lines.append(f"pdfplumber box: {table.extraction_box}")
             if processed:
                 lines.append(f"Header source: {getattr(table, 'header_source', 'table_extract')}")
                 lines.append(f"Schema match: {table.matched_schema or 'None'}")

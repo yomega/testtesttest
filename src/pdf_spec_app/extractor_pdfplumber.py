@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,46 @@ from .extractor_support import (
     _pdfplumber_page_pixel_size,
     _pdfplumber_table_settings,
 )
+
+
+def _dedupe_pdfplumber_chars_prefer_latest(
+    chars: list[dict[str, Any]],
+    tolerance: float = 1.0,
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[Any, ...], list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+    for index, char in enumerate(chars):
+        grouped[(char.get("upright"), char.get("text"))].append((index, char))
+
+    selected: list[tuple[int, dict[str, Any]]] = []
+    for group in grouped.values():
+        kept: list[tuple[int, dict[str, Any]]] = []
+        for index, char in group:
+            replacement_index = None
+            doctop = float(char.get("doctop", 0.0) or 0.0)
+            x0 = float(char.get("x0", 0.0) or 0.0)
+            for kept_index, (_original_index, kept_char) in enumerate(kept):
+                kept_doctop = float(kept_char.get("doctop", 0.0) or 0.0)
+                kept_x0 = float(kept_char.get("x0", 0.0) or 0.0)
+                if abs(doctop - kept_doctop) <= tolerance and abs(x0 - kept_x0) <= tolerance:
+                    replacement_index = kept_index
+                    break
+            if replacement_index is None:
+                kept.append((index, char))
+            else:
+                kept[replacement_index] = (index, char)
+        selected.extend(kept)
+
+    return [
+        char
+        for _index, char in sorted(
+            selected,
+            key=lambda item: (
+                float(item[1].get("doctop", 0.0) or 0.0),
+                float(item[1].get("x0", 0.0) or 0.0),
+                item[0],
+            ),
+        )
+    ]
 
 
 class PdfPlumberBackendMixin:
@@ -119,6 +160,7 @@ class PdfPlumberBackendMixin:
         try:
             with pdfplumber.open(str(path)) as pdf:
                 source_document.extraction_debug.update(_describe_pdfplumber_revision_usage(pdf))
+                source_document.extraction_debug["pdfplumber_char_resolution"] = "prefer_latest_overlapping_chars"
                 if source_document.extraction_debug["pdf_has_incremental_updates"] == "True":
                     source_document.evaluation_warnings.append(
                         "Incremental PDF updates were detected. The pdfplumber backend is using only the latest resolved object values from the final xref revision chain."
@@ -126,13 +168,17 @@ class PdfPlumberBackendMixin:
                 page_total = len(pdf.pages)
                 for page_index, page in enumerate(pdf.pages):
                     page_number = page_index + 1
-                    page_width_px, page_height_px = _pdfplumber_page_pixel_size(page)
+                    effective_page = self._dedupe_pdfplumber_page(page)
+                    page_width_px, page_height_px = _pdfplumber_page_pixel_size(effective_page)
                     max_page_width_px = max(max_page_width_px, page_width_px)
                     max_page_height_px = max(max_page_height_px, page_height_px)
                     preview = self._render_pdfplumber_page_preview(page, page_number)
                     if preview is not None:
                         source_document.page_preview_images.append(preview)
-                    raw_page_text = page.extract_text() or ""
+                    try:
+                        raw_page_text = effective_page.extract_text(layout=True) or ""
+                    except TypeError:
+                        raw_page_text = effective_page.extract_text() or ""
                     source_document.raw_import_text = _append_raw_import_text(source_document.raw_import_text, raw_page_text)
                     if raw_page_text.strip():
                         source_document.segments.append(
@@ -156,7 +202,7 @@ class PdfPlumberBackendMixin:
                         if page_regions:
                             page_tables.extend(
                                 self._extract_pdfplumber_tables_from_regions(
-                                    page,
+                                    effective_page,
                                     page_number,
                                     raw_page_text,
                                     options,
@@ -166,10 +212,11 @@ class PdfPlumberBackendMixin:
                         elif not page_tables:
                             page_tables.extend(
                                 self._build_pdfplumber_tables_from_rows(
-                                    self._extract_pdfplumber_tables_from_page(page, options),
+                                    self._extract_pdfplumber_tables_from_page(effective_page, options),
                                     page_number,
                                     raw_page_text,
                                     backend="pdfplumber",
+                                    extraction_box=self._page_box_tuple(page),
                                 )
                             )
                         source_document.tables.extend(page_tables)
@@ -254,6 +301,7 @@ class PdfPlumberBackendMixin:
         page_number: int,
         source_text: str,
         backend: str,
+        extraction_box: tuple[float, float, float, float] | None = None,
     ) -> list[ExtractedTable]:
         built_tables: list[ExtractedTable] = []
         for extracted_rows in extracted_tables:
@@ -273,6 +321,7 @@ class PdfPlumberBackendMixin:
                     raw_text=raw_text,
                     confidence=0.82,
                     backend=backend,
+                    extraction_box=extraction_box,
                 )
             )
         return built_tables
@@ -297,24 +346,33 @@ class PdfPlumberBackendMixin:
                 cropped_page = page.crop(bbox)
             except Exception:
                 continue
-            cropped_text = cropped_page.extract_text() or page_source_text
+            cropped_text = cropped_page.extract_text(Layout=True) or page_source_text
             extracted_tables = self._extract_pdfplumber_tables_from_page(cropped_page, options)
             built_tables = self._build_pdfplumber_tables_from_rows(
                 extracted_tables,
                 page_number,
                 cropped_text,
                 backend="pdfplumber_region",
+                extraction_box=bbox,
             )
             if not built_tables and cropped_text:
                 built_tables = _infer_tables_from_text(page_number, cropped_text)
                 for table in built_tables:
                     table.backend = "pdfplumber_region_text_fallback"
+                    table.extraction_box = bbox
             label = region.label or f"region {index}"
             for table in built_tables:
                 table.raw_text = table.raw_text or cropped_text
                 table.schema_debug_notes.append(f"Extracted from manual region: {label}")
             region_tables.extend(built_tables)
         return region_tables
+
+    @staticmethod
+    def _page_box_tuple(page: Any) -> tuple[float, float, float, float] | None:
+        bbox = getattr(page, "bbox", None)
+        if not bbox or len(bbox) != 4:
+            return None
+        return tuple(float(value) for value in bbox)
 
     def _extract_pdfplumber_tables_from_page(self, page: Any, options: ExtractionOptions) -> list[list[list[Any]]]:
         collected_tables: list[list[list[Any]]] = []
@@ -360,3 +418,13 @@ class PdfPlumberBackendMixin:
             collected_tables.append(extracted_rows)
 
         return collected_tables
+
+    @staticmethod
+    def _dedupe_pdfplumber_page(page: Any) -> Any:
+        try:
+            filtered_page = page.filter(lambda _obj: True)
+            filtered_page._objects = {kind: objs for kind, objs in page.objects.items()}
+            filtered_page._objects["char"] = _dedupe_pdfplumber_chars_prefer_latest(list(page.chars))
+            return filtered_page
+        except Exception:
+            return page

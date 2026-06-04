@@ -54,6 +54,7 @@ class ExtractedTable:
     matched_schema: str | None = None
     schema_score: float = 0.0
     schema_debug_notes: list[str] = field(default_factory=list)
+    extraction_box: tuple[float, float, float, float] | None = None
 
 
 @dataclass(slots=True)
