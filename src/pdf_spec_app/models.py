@@ -53,6 +53,7 @@ class ExtractedTable:
     header_source: str = "table_extract"
     matched_schema: str | None = None
     schema_score: float = 0.0
+    extraction_debug_notes: list[str] = field(default_factory=list)
     schema_debug_notes: list[str] = field(default_factory=list)
     extraction_box: tuple[float, float, float, float] | None = None
 
@@ -86,7 +87,7 @@ class SourceDocument:
     raw_tables: list[ExtractedTable] = field(default_factory=list)
     tables: list[ExtractedTable] = field(default_factory=list)
     page_preview_images: list[PagePreviewImage] = field(default_factory=list)
-    pdfplumber_debug_images: list[tuple[int, bytes]] = field(default_factory=list)
+    pdfplumber_debug_images: list[tuple[int, bytes, str]] = field(default_factory=list)
     extraction_debug: dict[str, str] = field(default_factory=dict)
     evaluation_warnings: list[str] = field(default_factory=list)
 

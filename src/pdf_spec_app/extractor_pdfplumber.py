@@ -65,7 +65,7 @@ class PdfPlumberBackendMixin:
         self,
         file_path: str | Path,
         options: ExtractionOptions | None = None,
-    ) -> list[tuple[int, bytes]]:
+    ) -> list[tuple[int, bytes, str]]:
         options = options or ExtractionOptions()
         path = Path(file_path)
         if path.suffix.lower() != ".pdf":
@@ -74,13 +74,22 @@ class PdfPlumberBackendMixin:
         if pdfplumber is None:
             raise ExtractionError("pdfplumber is not installed. Install project dependencies first.")
 
-        debug_images: list[tuple[int, bytes]] = []
+        debug_images: list[tuple[int, bytes, str]] = []
+        manual_regions_by_page = _group_manual_table_regions_by_page(options.manual_table_regions)
         try:
             with pdfplumber.open(str(path)) as pdf:
                 for page_index, page in enumerate(pdf.pages):
-                    debug_png = self._capture_pdfplumber_debug_tablefinder(page, options)
-                    if debug_png is not None:
-                        debug_images.append((page_index + 1, debug_png))
+                    page_number = page_index + 1
+                    effective_page = self._dedupe_pdfplumber_page(page)
+                    page_regions = manual_regions_by_page.get(page_number, [])
+                    debug_images.extend(
+                        self._capture_pdfplumber_debug_tablefinder_images(
+                            effective_page,
+                            page_number,
+                            options,
+                            page_regions,
+                        )
+                    )
         except Exception as exc:  # pragma: no cover
             raise ExtractionError(
                 f"pdfplumber could not generate tablefinder debug images for this PDF: {path.name}. Details: {exc}"
@@ -176,7 +185,7 @@ class PdfPlumberBackendMixin:
                     if preview is not None:
                         source_document.page_preview_images.append(preview)
                     try:
-                        raw_page_text = effective_page.extract_text(layout=True) or ""
+                        raw_page_text = effective_page.extract_text(layout=False) or ""
                     except TypeError:
                         raw_page_text = effective_page.extract_text() or ""
                     source_document.raw_import_text = _append_raw_import_text(source_document.raw_import_text, raw_page_text)
@@ -192,12 +201,17 @@ class PdfPlumberBackendMixin:
                     else:
                         missing_text_pages.append(page_index)
 
-                    debug_png = self._capture_pdfplumber_debug_tablefinder(page, options)
-                    if debug_png is not None:
-                        source_document.pdfplumber_debug_images.append((page_number, debug_png))
+                    page_regions = manual_regions_by_page.get(page_number, [])
+                    source_document.pdfplumber_debug_images.extend(
+                        self._capture_pdfplumber_debug_tablefinder_images(
+                            effective_page,
+                            page_number,
+                            options,
+                            page_regions,
+                        )
+                    )
 
                     if options.extract_tables:
-                        page_regions = manual_regions_by_page.get(page_number, [])
                         page_tables: list[ExtractedTable] = []
                         if page_regions:
                             page_tables.extend(
@@ -263,8 +277,46 @@ class PdfPlumberBackendMixin:
         self._report(progress_callback, 78.0, "Organizing extracted PDF content...")
         return source_document
 
-    def _capture_pdfplumber_debug_tablefinder(self, page: Any, options: ExtractionOptions) -> bytes | None:
-        table_settings = _pdfplumber_table_settings(options)
+    def _capture_pdfplumber_debug_tablefinder_images(
+        self,
+        page: Any,
+        page_number: int,
+        options: ExtractionOptions,
+        regions: list[ManualTableRegion],
+    ) -> list[tuple[int, bytes, str]]:
+        if not regions:
+            debug_png = self._capture_pdfplumber_debug_tablefinder(page, options)
+            return [(page_number, debug_png, f"Page {page_number}")] if debug_png is not None else []
+
+        debug_images: list[tuple[int, bytes, str]] = []
+        for index, region in enumerate(regions, start=1):
+            bbox = (
+                min(region.left, region.right),
+                min(region.top, region.bottom),
+                max(region.left, region.right),
+                max(region.top, region.bottom),
+            )
+            try:
+                cropped_page = page.crop(bbox)
+            except Exception:
+                continue
+            region_settings = self._pdfplumber_region_table_settings(cropped_page, options)
+            debug_png = self._capture_pdfplumber_debug_tablefinder(
+                cropped_page,
+                options,
+                table_settings_override=region_settings,
+            )
+            if debug_png is not None:
+                debug_images.append((page_number, debug_png, self._manual_region_debug_label(page_number, region, index)))
+        return debug_images
+
+    def _capture_pdfplumber_debug_tablefinder(
+        self,
+        page: Any,
+        options: ExtractionOptions,
+        table_settings_override: dict[str, Any] | None = None,
+    ) -> bytes | None:
+        table_settings = table_settings_override if table_settings_override is not None else _pdfplumber_table_settings(options)
         try:
             page_image = page.to_image(resolution=PDFPLUMBER_DEBUG_IMAGE_RESOLUTION)
             debug_image = page_image.debug_tablefinder() if table_settings is None else page_image.debug_tablefinder(table_settings)
@@ -346,8 +398,16 @@ class PdfPlumberBackendMixin:
                 cropped_page = page.crop(bbox)
             except Exception:
                 continue
-            cropped_text = cropped_page.extract_text(Layout=True) or page_source_text
-            extracted_tables = self._extract_pdfplumber_tables_from_page(cropped_page, options)
+            try:
+                cropped_text = cropped_page.extract_text(layout=False) or page_source_text
+            except TypeError:
+                cropped_text = cropped_page.extract_text() or page_source_text
+            region_settings = self._pdfplumber_region_table_settings(cropped_page, options)
+            extracted_tables = self._extract_pdfplumber_tables_from_page(
+                cropped_page,
+                options,
+                table_settings_override=region_settings,
+            )
             built_tables = self._build_pdfplumber_tables_from_rows(
                 extracted_tables,
                 page_number,
@@ -361,8 +421,11 @@ class PdfPlumberBackendMixin:
                     table.backend = "pdfplumber_region_text_fallback"
                     table.extraction_box = bbox
             label = region.label or f"region {index}"
+            region_settings_text = json.dumps(region_settings, sort_keys=True)
             for table in built_tables:
                 table.raw_text = table.raw_text or cropped_text
+                table.extraction_debug_notes.append(f"Manual region: {label}")
+                table.extraction_debug_notes.append(f"Region settings: {region_settings_text}")
                 table.schema_debug_notes.append(f"Extracted from manual region: {label}")
             region_tables.extend(built_tables)
         return region_tables
@@ -374,10 +437,13 @@ class PdfPlumberBackendMixin:
             return None
         return tuple(float(value) for value in bbox)
 
-    def _extract_pdfplumber_tables_from_page(self, page: Any, options: ExtractionOptions) -> list[list[list[Any]]]:
+    def _extract_pdfplumber_tables_from_page_with_settings(
+        self,
+        page: Any,
+        table_settings: dict[str, Any] | None,
+    ) -> list[list[list[Any]]]:
         collected_tables: list[list[list[Any]]] = []
         seen_signatures: set[str] = set()
-        table_settings = _pdfplumber_table_settings(options)
 
         found_tables: list[Any] = []
         if table_settings is None:
@@ -420,6 +486,28 @@ class PdfPlumberBackendMixin:
             collected_tables.append(extracted_rows)
 
         return collected_tables
+
+    def _extract_pdfplumber_tables_from_page(
+        self,
+        page: Any,
+        options: ExtractionOptions,
+        table_settings_override: dict[str, Any] | None = None,
+    ) -> list[list[list[Any]]]:
+        table_settings = table_settings_override if table_settings_override is not None else _pdfplumber_table_settings(options)
+        return self._extract_pdfplumber_tables_from_page_with_settings(page, table_settings)
+
+    @staticmethod
+    def _pdfplumber_region_table_settings(page: Any, options: ExtractionOptions) -> dict[str, Any]:
+        settings = dict(_pdfplumber_table_settings(options) or {})
+        os = 1
+        settings["explicit_vertical_lines"] = [os, max(float(getattr(page, "width", 0.0)) - os, 0.0)]
+        settings["explicit_horizontal_lines"] = [os, max(float(getattr(page, "height", 0.0)) - os, 0.0)]
+        return settings
+
+    @staticmethod
+    def _manual_region_debug_label(page_number: int, region: ManualTableRegion, index: int) -> str:
+        label = region.label.strip() if region.label else ""
+        return f"Page {page_number} | {label or f'Region {index}'}"
 
     @staticmethod
     def _dedupe_pdfplumber_page(page: Any) -> Any:

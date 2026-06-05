@@ -8,8 +8,14 @@ from src.pdf_spec_app import extractor
 from .models import ExtractedSegment, ExtractedTable, TableSchema
 
 
+def _strip_pdf_cid_artifacts(value: str) -> str:
+    stripped = re.sub(r"\(cid\s*:\s*\d+\)", " ", value, flags=re.IGNORECASE)
+    stripped = re.sub(r"\bcid\s*[:#]?\s*\d+\b", " ", stripped, flags=re.IGNORECASE)
+    return stripped
+
+
 def normalize_header(value: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+    normalized = re.sub(r"[^a-z0-9]+", " ", _strip_pdf_cid_artifacts(value).casefold()).strip()
     return re.sub(r"\s+", " ", normalized)
 
 

@@ -61,6 +61,7 @@ class App(tk.Tk):
         self._pdfplumber_debug_refresh_after_id: str | None = None
         self.pdfplumber_text_x_max = DEFAULT_PDFPLUMBER_TOLERANCE_MAX
         self.pdfplumber_text_y_max = DEFAULT_PDFPLUMBER_TOLERANCE_MAX
+        self.regenerate_needed_var = tk.StringVar(value="")
 
         self._build_layout()
         self._restore_window_state()
@@ -98,6 +99,8 @@ class App(tk.Tk):
 
         self.status_var = tk.StringVar(value="Select a source document to begin.")
         ttk.Label(shell, textvariable=self.status_var).pack(fill=tk.X, pady=(12, 8))
+        self.regenerate_needed_label = ttk.Label(shell, textvariable=self.regenerate_needed_var, foreground="#a05a00")
+        self.regenerate_needed_label.pack(fill=tk.X, pady=(0, 8))
 
         self.progress_var = tk.DoubleVar(value=0.0)
         self.progress_bar = ttk.Progressbar(
@@ -268,6 +271,7 @@ class App(tk.Tk):
         self._update_pdfplumber_slider_bounds()
         self._on_table_backend_changed()
         self.ocr_backend_var.trace_add("write", self._on_ocr_backend_changed)
+        self.ocr_language_var.trace_add("write", self._on_ocr_language_changed)
         self._on_ocr_backend_changed()
 
         schema_controls = ttk.Frame(self.left_frame)
@@ -403,6 +407,7 @@ class App(tk.Tk):
 
         self.selected_file = Path(file_path)
         self.manual_table_regions = []
+        self._clear_regenerate_needed()
         self.status_var.set(f"Selected: {self.selected_file}. Generating specification...")
         self.generate_spec()
 
@@ -431,6 +436,7 @@ class App(tk.Tk):
         self._populate_schema_list()
         self.schema_list.selection_set(index)
         self.status_var.set(f"Updated schema: {dialog.result.name}")
+        self._mark_regenerate_needed()
 
     def remove_table_schema(self) -> None:
         selected = self.schema_list.curselection()
@@ -446,6 +452,7 @@ class App(tk.Tk):
         del self.table_schemas[index]
         self._populate_schema_list()
         self.status_var.set(f"Removed schema: {schema.name}")
+        self._mark_regenerate_needed()
 
     def select_table_regions(self) -> None:
         if self.ignore_tables_var.get():
@@ -488,6 +495,7 @@ class App(tk.Tk):
         self.status_var.set(
             f"Saved {len(self.manual_table_regions)} manual table region(s). Regenerating specification..."
         )
+        self._mark_regenerate_needed()
         if not self.is_generating:
             self.generate_spec()
 
@@ -562,6 +570,7 @@ class App(tk.Tk):
                     self.debug_tables.insert(tk.END, self._render_table_debug(self.source_document, processed=True))
                     self.progress_var.set(100.0)
                     self.status_var.set("Specification generated. Review the preview, then export to DOCX.")
+                    self._clear_regenerate_needed()
                     self.is_generating = False
                     self._set_controls_enabled(True)
                     should_continue = False
@@ -635,6 +644,7 @@ class App(tk.Tk):
         self.pdfplumber_text_y_scale.configure(state=tk.NORMAL if not self.is_generating else tk.DISABLED)
         self._on_table_backend_changed()
         self._on_pdfplumber_defaults_changed()
+        self._mark_regenerate_needed()
 
     def _on_table_backend_changed(self, *_args) -> None:
         is_pdfplumber = TABLE_BACKEND_LABELS.get(self.table_backend_var.get().strip(), "pdfplumber") == "pdfplumber"
@@ -656,6 +666,7 @@ class App(tk.Tk):
                 widget.grid_remove()
         self.after_idle(self._on_pdfplumber_defaults_changed)
         self._schedule_pdfplumber_debug_refresh()
+        self._mark_regenerate_needed()
 
     def _on_pdfplumber_defaults_changed(self, *_args) -> None:
         use_defaults = self.pdfplumber_use_defaults_var.get()
@@ -697,9 +708,11 @@ class App(tk.Tk):
             self.pdfplumber_text_y_scale.grid_remove()
 
         self._schedule_pdfplumber_debug_refresh()
+        self._mark_regenerate_needed()
 
     def _on_pdfplumber_tolerance_changed(self, _value: str) -> None:
         self._schedule_pdfplumber_debug_refresh()
+        self._mark_regenerate_needed()
 
     def _on_ocr_backend_changed(self, *_args) -> None:
         ocr_backend = OCR_BACKEND_LABELS.get(self.ocr_backend_var.get().strip(), "tesseract")
@@ -713,6 +726,18 @@ class App(tk.Tk):
             self.table_backend_combo.configure(state="readonly")
             if not self.is_generating:
                 self.region_button.configure(state=tk.NORMAL)
+        self._mark_regenerate_needed()
+
+    def _on_ocr_language_changed(self, *_args) -> None:
+        self._mark_regenerate_needed()
+
+    def _mark_regenerate_needed(self) -> None:
+        if self.is_generating or (self.specification is None and self.source_document is None):
+            return
+        self.regenerate_needed_var.set("Regenerate needed to apply the latest option changes.")
+
+    def _clear_regenerate_needed(self) -> None:
+        self.regenerate_needed_var.set("")
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -877,8 +902,6 @@ class App(tk.Tk):
             }
         )
         self._refresh_pdfplumber_debug_view()
-        self.debug_tables.delete("1.0", tk.END)
-        self.debug_tables.insert(tk.END, self._render_table_debug(self.source_document, processed=True))
 
     def _clear_pdfplumber_debug_view(self) -> None:
         for child in self.pdfplumber_debug_container.winfo_children():
@@ -985,16 +1008,17 @@ class App(tk.Tk):
             label.bind("<Button-5>", self._on_pdfplumber_debug_mousewheel_linux)
             return
 
-        for page_number, image_bytes in self.source_document.pdfplumber_debug_images:
+        for page_number, image_bytes, image_label_text in self.source_document.pdfplumber_debug_images:
             page_label = ttk.Label(
                 self.pdfplumber_debug_container,
-                text=f"Page {page_number}",
+                text=image_label_text,
             )
             page_label.pack(anchor="w", padx=8, pady=(8, 4))
             page_label.bind("<MouseWheel>", self._on_pdfplumber_debug_mousewheel)
             page_label.bind("<Button-4>", self._on_pdfplumber_debug_mousewheel_linux)
             page_label.bind("<Button-5>", self._on_pdfplumber_debug_mousewheel_linux)
             image = Image.open(BytesIO(image_bytes))
+            image = self._overlay_manual_regions_on_debug_image(image, page_number)
             photo = ImageTk.PhotoImage(image)
             self.pdfplumber_debug_photoimages.append(photo)
             image_label = ttk.Label(self.pdfplumber_debug_container, image=photo)
@@ -1002,6 +1026,14 @@ class App(tk.Tk):
             image_label.bind("<MouseWheel>", self._on_pdfplumber_debug_mousewheel)
             image_label.bind("<Button-4>", self._on_pdfplumber_debug_mousewheel_linux)
             image_label.bind("<Button-5>", self._on_pdfplumber_debug_mousewheel_linux)
+
+    def _overlay_manual_regions_on_debug_image(self, image: Image.Image, page_number: int) -> Image.Image:
+        regions = [region for region in self.manual_table_regions if region.page_number == page_number]
+        if not regions or self.source_document is None:
+            return image
+        # When manual regions exist, the tablefinder images are already generated
+        # from the cropped regions themselves, so there is no full-page overlay to draw.
+        return image
 
     @staticmethod
     def _render_spec_preview(specification: Specification) -> str:
@@ -1084,6 +1116,10 @@ class App(tk.Tk):
             lines.append(f"Backend: {getattr(table, 'backend', 'unknown')}")
             if processed and getattr(table, "extraction_box", None):
                 lines.append(f"pdfplumber box: {table.extraction_box}")
+            if processed and getattr(table, "extraction_debug_notes", None):
+                lines.append("Extraction debug:")
+                for note in table.extraction_debug_notes:
+                    lines.append(f"  - {note}")
             if processed:
                 lines.append(f"Header source: {getattr(table, 'header_source', 'table_extract')}")
                 lines.append(f"Schema match: {table.matched_schema or 'None'}")
