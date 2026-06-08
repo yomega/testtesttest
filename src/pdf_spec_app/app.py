@@ -62,6 +62,7 @@ class App(tk.Tk):
         self.pdfplumber_text_x_max = DEFAULT_PDFPLUMBER_TOLERANCE_MAX
         self.pdfplumber_text_y_max = DEFAULT_PDFPLUMBER_TOLERANCE_MAX
         self.regenerate_needed_var = tk.StringVar(value="")
+        self.raw_import_pdfplumber_objects_mode = tk.BooleanVar(value=False)
 
         self._build_layout()
         self._restore_window_state()
@@ -328,6 +329,12 @@ class App(tk.Tk):
             variable=self.raw_import_whitespace_mode,
             command=self._refresh_raw_import_view,
         ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            import_controls,
+            text="pdfplumber Objects",
+            variable=self.raw_import_pdfplumber_objects_mode,
+            command=self._refresh_raw_import_view,
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
         self.raw_import = tk.Text(import_tab, wrap="none")
         self.raw_import.pack(fill=tk.BOTH, expand=True)
@@ -565,6 +572,7 @@ class App(tk.Tk):
                     self.preview.insert(tk.END, self._render_spec_preview(self.specification))
                     self._refresh_raw_import_view()
                     self._refresh_pdfplumber_page_view()
+                    self._refresh_pdfplumber_debug_images_from_controls()
                     self._refresh_pdfplumber_debug_view()
                     self.raw_debug_tables.insert(tk.END, self._render_table_debug(self.source_document, processed=False))
                     self.debug_tables.insert(tk.END, self._render_table_debug(self.source_document, processed=True))
@@ -816,7 +824,14 @@ class App(tk.Tk):
 
     def _refresh_raw_import_view(self) -> None:
         self.raw_import.delete("1.0", tk.END)
-        self.raw_import.insert(tk.END, self._render_raw_import_text(self.source_document, self.raw_import_whitespace_mode.get()))
+        self.raw_import.insert(
+            tk.END,
+            self._render_raw_import_text(
+                self.source_document,
+                self.raw_import_whitespace_mode.get(),
+                self.raw_import_pdfplumber_objects_mode.get(),
+            ),
+        )
 
     def _update_pdfplumber_slider_bounds(self, source_document: SourceDocument | None = None) -> None:
         width_limit = DEFAULT_PDFPLUMBER_TOLERANCE_MAX
@@ -875,6 +890,7 @@ class App(tk.Tk):
             debug_images = self.pipeline.extractor.generate_pdfplumber_debug_images(
                 self.selected_file,
                 self.extraction_options,
+                self.source_document.tables if self.source_document is not None else None,
             )
         except Exception as exc:  # pragma: no cover - UI error handling
             self.status_var.set(f"pdfplumber tablefinder refresh failed: {exc}")
@@ -1008,7 +1024,7 @@ class App(tk.Tk):
             label.bind("<Button-5>", self._on_pdfplumber_debug_mousewheel_linux)
             return
 
-        for page_number, image_bytes, image_label_text in self.source_document.pdfplumber_debug_images:
+        for page_number, image_bytes, image_label_text, settings_text in self.source_document.pdfplumber_debug_images:
             page_label = ttk.Label(
                 self.pdfplumber_debug_container,
                 text=image_label_text,
@@ -1017,6 +1033,16 @@ class App(tk.Tk):
             page_label.bind("<MouseWheel>", self._on_pdfplumber_debug_mousewheel)
             page_label.bind("<Button-4>", self._on_pdfplumber_debug_mousewheel_linux)
             page_label.bind("<Button-5>", self._on_pdfplumber_debug_mousewheel_linux)
+            settings_label = ttk.Label(
+                self.pdfplumber_debug_container,
+                text=settings_text,
+                justify=tk.LEFT,
+                wraplength=900,
+            )
+            settings_label.pack(anchor="w", padx=8, pady=(0, 4))
+            settings_label.bind("<MouseWheel>", self._on_pdfplumber_debug_mousewheel)
+            settings_label.bind("<Button-4>", self._on_pdfplumber_debug_mousewheel_linux)
+            settings_label.bind("<Button-5>", self._on_pdfplumber_debug_mousewheel_linux)
             image = Image.open(BytesIO(image_bytes))
             image = self._overlay_manual_regions_on_debug_image(image, page_number)
             photo = ImageTk.PhotoImage(image)
@@ -1056,13 +1082,46 @@ class App(tk.Tk):
         return "\n".join(lines)
 
     @staticmethod
-    def _render_raw_import_text(source_document: SourceDocument | None, whitespace_mode: bool = False) -> str:
+    def _render_raw_import_text(
+        source_document: SourceDocument | None,
+        whitespace_mode: bool = False,
+        include_pdfplumber_objects: bool = False,
+    ) -> str:
         if source_document is None:
             return "No raw import text is available yet."
         raw_text = source_document.raw_import_text or "[The extraction tool returned no raw import text.]"
-        if not whitespace_mode:
-            return raw_text
-        return App._render_emacs_whitespace_mode(raw_text)
+        rendered_text = raw_text if not whitespace_mode else App._render_emacs_whitespace_mode(raw_text)
+        if not include_pdfplumber_objects:
+            return rendered_text
+        return App._render_raw_import_text_with_pdfplumber_objects(source_document, whitespace_mode)
+
+    @staticmethod
+    def _render_raw_import_text_with_pdfplumber_objects(
+        source_document: SourceDocument,
+        whitespace_mode: bool = False,
+    ) -> str:
+        object_debug_by_page = {
+            page_number: debug_text
+            for page_number, debug_text in source_document.pdfplumber_object_debug_pages
+        }
+        segments_by_page: dict[int, list[str]] = {}
+        for segment in source_document.segments:
+            segments_by_page.setdefault(segment.page_number, []).append(segment.text)
+
+        page_numbers = sorted(set(segments_by_page) | set(object_debug_by_page))
+        if not page_numbers:
+            fallback_text = source_document.raw_import_text or "[The extraction tool returned no raw import text.]"
+            return fallback_text if not whitespace_mode else App._render_emacs_whitespace_mode(fallback_text)
+
+        rendered_pages: list[str] = []
+        for page_number in page_numbers:
+            page_lines = [f"Page {page_number}", ""]
+            page_text = object_debug_by_page.get(page_number, "[No pdfplumber object debug information is available for this page.]")
+            if whitespace_mode:
+                page_text = App._render_emacs_whitespace_mode(page_text)
+            page_lines.append(page_text)
+            rendered_pages.append("\n".join(page_lines))
+        return "\n\n".join(rendered_pages)
 
     @staticmethod
     def _render_emacs_whitespace_mode(text: str) -> str:
@@ -1116,7 +1175,9 @@ class App(tk.Tk):
             lines.append(f"Backend: {getattr(table, 'backend', 'unknown')}")
             if processed and getattr(table, "extraction_box", None):
                 lines.append(f"pdfplumber box: {table.extraction_box}")
-            if processed and getattr(table, "extraction_debug_notes", None):
+            if processed and getattr(table, "extraction_vertical_lines", None):
+                lines.append(f"pdfplumber vertical lines: {table.extraction_vertical_lines}")
+            if getattr(table, "extraction_debug_notes", None):
                 lines.append("Extraction debug:")
                 for note in table.extraction_debug_notes:
                     lines.append(f"  - {note}")

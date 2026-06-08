@@ -33,6 +33,7 @@ class ProcessingPipeline:
         progress_callback: ProgressCallback | None = None,
     ) -> Specification:
         self._report(progress_callback, 0.0, "Starting specification generation...")
+        schemas = table_schemas or []
         document = self.extractor.extract(file_path, extraction_options, progress_callback)
         self.last_document = document
         if extraction_options is not None and extraction_options.ignore_tables:
@@ -42,10 +43,26 @@ class ProcessingPipeline:
             specification = self.builder.build(document)
             self._report(progress_callback, 100.0, "Specification generated.")
             return specification
-        schemas = table_schemas or []
         document.raw_tables = deepcopy(document.tables)
         self._report(progress_callback, 80.0, "Ranking detected tables...")
         document.tables = rank_tables_by_schema(document.tables, schemas, document.segments)
+        if (
+            extraction_options is not None
+            and extraction_options.table_extraction_backend == "pdfplumber"
+            and schemas
+        ):
+            self._report(progress_callback, 85.0, "Refining pdfplumber tables using matched schema headers...")
+            document.tables = self.extractor.refine_pdfplumber_tables_with_schema(
+                file_path,
+                document.tables,
+                schemas,
+                extraction_options,
+            )
+            if any(table.extraction_column_bounds for table in document.tables):
+                document.extraction_debug["pdfplumber_effective_vertical_strategy"] = "explicit for schema-rescanned sections"
+                document.extraction_debug["pdfplumber_schema_rescan_count"] = str(
+                    sum(1 for table in document.tables if table.extraction_column_bounds)
+                )
         self._report(progress_callback, 90.0, "Building specification draft...")
         specification = self.builder.build(document)
         self._report(progress_callback, 100.0, "Specification generated.")

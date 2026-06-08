@@ -329,6 +329,68 @@ class TableSchemaTests(unittest.TestCase):
         self.assertEqual(deduped[0].get("revision"), "new")
         self.assertEqual([char["text"] for char in deduped], ["A", "B"])
 
+    def test_pdfplumber_schema_refinement_rescans_columns_from_header_widths(self) -> None:
+        class FakePage:
+            bbox = (0.0, 0.0, 220.0, 200.0)
+            width = 220.0
+            height = 200.0
+
+            def crop(self, _bbox):
+                return self
+
+            def extract_words(self, return_chars=True):
+                return [
+                    {"text": "Description", "x0": 10.0, "x1": 70.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+                    {"text": "Pattern", "x0": 90.0, "x1": 125.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+                    {"text": "no.", "x0": 128.0, "x1": 145.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+                    {"text": "V3", "x0": 175.0, "x1": 190.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+                    {"text": "Valve", "x0": 10.0, "x1": 34.0, "top": 30.0, "bottom": 40.0, "doctop": 30.0},
+                    {"text": "body", "x0": 36.0, "x1": 56.0, "top": 30.0, "bottom": 40.0, "doctop": 30.0},
+                    {"text": "P-100", "x0": 92.0, "x1": 120.0, "top": 30.0, "bottom": 40.0, "doctop": 30.0},
+                    {"text": "OK", "x0": 176.0, "x1": 188.0, "top": 30.0, "bottom": 40.0, "doctop": 30.0},
+                ]
+
+        extractor = DocumentExtractor()
+        table = ExtractedTable(
+            page_number=1,
+            headers=["Column1", "Column2", "Column3"],
+            rows=[["Valve body", "P-100", "OK"]],
+            source_text="Description Pattern no. V3\nValve body P-100 OK",
+            raw_text="Valve body | P-100 | OK",
+            backend="pdfplumber",
+            matched_schema="partlist",
+            schema_score=2.2,
+            extraction_box=(0.0, 0.0, 220.0, 200.0),
+        )
+        schema = TableSchema(
+            name="partlist",
+            columns=["description", "pattern no.", "v3"],
+            required_columns=["description", "pattern no."],
+            start_header="description",
+            end_header="v3",
+        )
+        options = ExtractionOptions(
+            table_extraction_backend="pdfplumber",
+            pdfplumber_vertical_strategy="text",
+        )
+
+        refined = extractor._refine_pdfplumber_table_from_schema(FakePage(), table, schema, options)
+
+        self.assertIsNotNone(refined)
+        assert refined is not None
+        self.assertEqual(refined.headers, ["Description", "Pattern no.", "V3"])
+        self.assertEqual(refined.rows, [["Valve body", "P-100", "OK"]])
+        self.assertEqual(refined.header_source, "pdfplumber_schema_rescan")
+        self.assertEqual(refined.extraction_vertical_lines, [0.0, 80.0, 160.0, 220.0])
+        table_settings_notes = [note for note in refined.extraction_debug_notes if note.startswith("Table settings:")]
+        self.assertEqual(len(table_settings_notes), 1)
+        self.assertIn('"vertical_strategy": "explicit"', table_settings_notes[0])
+
+        debug_settings = extractor._pdfplumber_schema_rescan_table_settings(FakePage(), refined, options)
+        self.assertEqual(debug_settings["vertical_strategy"], "explicit")
+        self.assertEqual(debug_settings["explicit_vertical_lines"], [0.0, 80.0, 160.0, 220.0])
+        self.assertEqual(debug_settings["explicit_horizontal_lines"], [0.0, 200.0])
+
     def test_schema_match_prefers_required_columns(self) -> None:
         table = ExtractedTable(
             page_number=3,
@@ -349,6 +411,94 @@ class TableSchemaTests(unittest.TestCase):
 
         self.assertEqual(result.schema_name, "Data Dictionary")
         self.assertGreater(result.score, 1.0)
+
+    def test_pdfplumber_header_match_ignores_cid_artifact_tokens(self) -> None:
+        extractor = DocumentExtractor()
+        schema = TableSchema(
+            name="partlist",
+            columns=["description", "pattern no.", "v3"],
+            required_columns=["description", "pattern no."],
+            start_header="description",
+            end_header="v3",
+        )
+        line_words = [
+            {"text": "Description", "x0": 10.0, "x1": 70.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+            {"text": "(cid:127)", "x0": 72.0, "x1": 82.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+            {"text": "Pattern", "x0": 90.0, "x1": 125.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+            {"text": "no.", "x0": 128.0, "x1": 145.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+            {"text": "V3", "x0": 175.0, "x1": 190.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+        ]
+
+        matches = extractor._match_schema_headers_in_line(line_words, schema)
+
+        self.assertIsNotNone(matches)
+        assert matches is not None
+        self.assertEqual([match["label"] for match in matches], ["Description", "Pattern no.", "V3"])
+
+    def test_pdfplumber_header_line_grouping_keeps_same_visual_line_with_top_variance(self) -> None:
+        extractor = DocumentExtractor()
+        options = ExtractionOptions(pdfplumber_text_y_tolerance=1)
+        words = [
+            {"text": "Description", "x0": 10.0, "x1": 70.0, "top": 10.0, "bottom": 20.0, "doctop": 10.0},
+            {"text": "Pattern", "x0": 90.0, "x1": 125.0, "top": 10.6, "bottom": 20.6, "doctop": 10.6},
+            {"text": "no.", "x0": 128.0, "x1": 145.0, "top": 10.8, "bottom": 20.8, "doctop": 10.8},
+            {"text": "V3", "x0": 175.0, "x1": 190.0, "top": 11.1, "bottom": 21.1, "doctop": 11.1},
+        ]
+
+        lines = extractor._group_pdfplumber_words_into_lines(words, options)
+
+        self.assertEqual(len(lines), 1)
+        self.assertEqual([word["text"] for word in lines[0]], ["Description", "Pattern", "no.", "V3"])
+
+    def test_pdfplumber_schema_refinement_uses_word_objects_for_single_token_headers(self) -> None:
+        class FakePage:
+            bbox = (0.0, 0.0, 260.0, 200.0)
+            width = 260.0
+            height = 200.0
+
+            def crop(self, _bbox):
+                return self
+
+            def extract_words(self, return_chars=True):
+                return [
+                    {"text": "Desc", "x0": 20.0, "x1": 45.0, "top": 12.0, "bottom": 22.0, "doctop": 12.0},
+                    {"text": "Code", "x0": 120.0, "x1": 150.0, "top": 12.0, "bottom": 22.0, "doctop": 12.0},
+                    {"text": "Qty", "x0": 210.0, "x1": 230.0, "top": 12.0, "bottom": 22.0, "doctop": 12.0},
+                    {"text": "Valve", "x0": 20.0, "x1": 50.0, "top": 34.0, "bottom": 44.0, "doctop": 34.0},
+                    {"text": "P-100", "x0": 121.0, "x1": 148.0, "top": 34.0, "bottom": 44.0, "doctop": 34.0},
+                    {"text": "2", "x0": 212.0, "x1": 216.0, "top": 34.0, "bottom": 44.0, "doctop": 34.0},
+                ]
+
+        extractor = DocumentExtractor()
+        table = ExtractedTable(
+            page_number=1,
+            headers=["Column1", "Column2", "Column3"],
+            rows=[["Valve", "P-100", "2"]],
+            source_text="Desc Code Qty\nValve P-100 2",
+            raw_text="Valve | P-100 | 2",
+            backend="pdfplumber",
+            matched_schema="partlist",
+            schema_score=2.0,
+            extraction_box=(0.0, 0.0, 260.0, 200.0),
+            extraction_words=FakePage().extract_words(),
+        )
+        schema = TableSchema(
+            name="partlist",
+            columns=["desc", "code", "qty"],
+            required_columns=["desc", "code"],
+        )
+        options = ExtractionOptions(
+            table_extraction_backend="pdfplumber",
+            pdfplumber_vertical_strategy="text",
+        )
+
+        refined = extractor._refine_pdfplumber_table_from_schema(FakePage(), table, schema, options)
+
+        self.assertIsNotNone(refined)
+        assert refined is not None
+        self.assertEqual(refined.headers, ["Desc", "Code", "Qty"])
+        self.assertEqual(refined.extraction_vertical_lines, [0.0, 82.5, 180.0, 260.0])
+        self.assertIn("Rescan delineation source: word_objects", refined.extraction_debug_notes)
 
     def test_schema_score_increases_when_unknown_columns_fall_between_defined_headers(self) -> None:
         direct_table = ExtractedTable(

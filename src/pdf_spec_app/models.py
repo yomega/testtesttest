@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 
 @dataclass(slots=True)
@@ -56,6 +56,9 @@ class ExtractedTable:
     extraction_debug_notes: list[str] = field(default_factory=list)
     schema_debug_notes: list[str] = field(default_factory=list)
     extraction_box: tuple[float, float, float, float] | None = None
+    extraction_column_bounds: list[tuple[float, float, str]] = field(default_factory=list)
+    extraction_vertical_lines: list[float] = field(default_factory=list)
+    extraction_words: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -83,11 +86,13 @@ class SourceDocument:
     path: Path
     title: str
     raw_import_text: str = ""
+    pdfplumber_object_debug_text: str = ""
+    pdfplumber_object_debug_pages: list[tuple[int, str]] = field(default_factory=list)
     segments: list[ExtractedSegment] = field(default_factory=list)
     raw_tables: list[ExtractedTable] = field(default_factory=list)
     tables: list[ExtractedTable] = field(default_factory=list)
     page_preview_images: list[PagePreviewImage] = field(default_factory=list)
-    pdfplumber_debug_images: list[tuple[int, bytes, str]] = field(default_factory=list)
+    pdfplumber_debug_images: list[tuple[int, bytes, str, str]] = field(default_factory=list)
     extraction_debug: dict[str, str] = field(default_factory=dict)
     evaluation_warnings: list[str] = field(default_factory=list)
 
