@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import shutil
 import sys
 from pathlib import Path
@@ -124,7 +125,18 @@ def _prepare_tk_library(python_root: Path) -> Path:
 from .app import main
 
 
+def _configure_interrupt_handling() -> None:
+    def _handle_sigint(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
+
 if __name__ == "__main__":
     _configure_python_runtime()
     _configure_tk_environment()
-    raise SystemExit(main())
+    _configure_interrupt_handling()
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)

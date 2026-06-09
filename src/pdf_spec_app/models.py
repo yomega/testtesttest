@@ -15,6 +15,9 @@ class TableSchema:
     end_header: str | None = None
     weight: float = 1.5
 
+    def all_columns(self) -> list[str]:
+        return list(set(self.columns + [self.start_header] + [self.end_header] + self.required_columns))
+
 
 @dataclass(slots=True)
 class ExtractionOptions:

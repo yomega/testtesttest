@@ -476,7 +476,10 @@ class PdfPlumberBackendMixin:
                 options,
                 table_settings_override=page_settings_override,
             )
-            return [(page_number, debug_png, page_label_override or f"Page {page_number}")] if debug_png is not None else []
+            settings_text = self._format_pdfplumber_settings_text(page_settings_override or default_settings)
+            return [
+                (page_number, debug_png, page_label_override or f"Page {page_number}", settings_text)
+            ] if debug_png is not None else []
 
         debug_images: list[tuple[int, bytes, str, str]] = []
         for index, region in enumerate(regions, start=1):
@@ -490,7 +493,16 @@ class PdfPlumberBackendMixin:
                 cropped_page = page.crop(bbox)
             except Exception:
                 continue
-            region_settings = self._pdfplumber_region_table_settings(cropped_page, options)
+
+            cropped_words = cropped_page.extract_words(x_tolerance=options.pdfplumber_text_x_tolerance,return_chars=True) or []
+
+            best_line_match = self._best_schema_guided_line_match(cropped_page, options, cropped_words)
+            if best_line_match is None:
+                best_line_match = None, None, []
+
+            schema_name, line_words, line_box = best_line_match
+
+            region_settings = self._pdfplumber_region_table_settings(cropped_page, options, line_words)
             debug_png = self._capture_pdfplumber_debug_tablefinder(
                 cropped_page,
                 options,
@@ -614,7 +626,6 @@ class PdfPlumberBackendMixin:
                     raw_text=raw_text,
                     confidence=0.82,
                     backend=backend,
-                    extraction_debug_notes=list(extraction_debug_notes or []),
                     extraction_box=extraction_box,
                     extraction_words=list(extraction_words or []),
                     extraction_debug_notes=(
@@ -649,7 +660,7 @@ class PdfPlumberBackendMixin:
             except TypeError:
                 cropped_text = cropped_page.extract_text() or page_source_text
             try:
-                cropped_words = cropped_page.extract_words(return_chars=True) or []
+                cropped_words = cropped_page.extract_words(x_tolerance=options.pdfplumber_text_x_tolerance,return_chars=True) or []
             except TypeError:
                 try:
                     cropped_words = cropped_page.extract_words() or []
@@ -657,7 +668,15 @@ class PdfPlumberBackendMixin:
                     cropped_words = []
             except Exception:
                 cropped_words = []
-            region_settings = self._pdfplumber_region_table_settings(cropped_page, options)
+
+            best_line_match = self._best_schema_guided_line_match(cropped_page, options, cropped_words)
+            if best_line_match is None:
+                best_line_match = None, None, []
+
+            schema_name, line_words, line_box = best_line_match
+            
+            region_settings = self._pdfplumber_region_table_settings(cropped_page, options, line_words)
+            
             extracted_tables = self._extract_pdfplumber_tables_from_page(
                 cropped_page,
                 options,
@@ -717,6 +736,7 @@ class PdfPlumberBackendMixin:
             except Exception:
                 found_tables = []
 
+
         if found_tables:
             extracted_tables = [table.extract(**((table_settings or {}).get("text_settings") or {})) for table in found_tables]
         else:
@@ -754,8 +774,7 @@ class PdfPlumberBackendMixin:
         table_settings = table_settings_override if table_settings_override is not None else _pdfplumber_table_settings(options)
         return self._extract_pdfplumber_tables_from_page_with_settings(page, table_settings)
 
-    @staticmethod
-    def _pdfplumber_region_table_settings(page: Any, options: ExtractionOptions) -> dict[str, Any]:
+    def _pdfplumber_region_table_settings(self,page: Any, options: ExtractionOptions, header_words: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         settings = dict(_pdfplumber_table_settings(options) or {})
         bbox = getattr(
             page,
@@ -763,8 +782,14 @@ class PdfPlumberBackendMixin:
             (0.0, 0.0, float(getattr(page, "width", 0.0) or 0.0), float(getattr(page, "height", 0.0) or 0.0)),
         )
         settings["vertical_strategy"] = "explicit"
-        settings["explicit_vertical_lines"] = settings.get("explicit_vertical_lines", []) + [float(bbox[0]), float(bbox[2])]
-        settings["explicit_horizontal_lines"] = settings.get("explicit_horizontal_lines", []) + [float(bbox[1]), float(bbox[3])]
+        settings["explicit_vertical_lines"] = settings.get("explicit_vertical_lines", []) + [bbox[0], bbox[2]]
+        settings["explicit_horizontal_lines"] = settings.get("explicit_horizontal_lines", []) + [bbox[1], bbox[3]]
+
+        if header_words:
+            header_bounds, header_v_lines = self._header_words_to_column_geometry(header_words, page)
+            if header_v_lines:
+                settings["explicit_vertical_lines"] = header_v_lines
+
         return settings
 
     def _schema_guided_page_settings(
@@ -777,31 +802,48 @@ class PdfPlumberBackendMixin:
             return None, None, []
 
         line_match = self._best_schema_guided_line_match(page, options)
+        
         if line_match is None:
             return None, None, []
 
-        schema_name, line_text, line_box = line_match
-        settings = self._schema_guided_table_settings(page, options, line_box)
+        schema_name, line_words, line_box = line_match
+        settings = self._schema_guided_table_settings(page, options, line_box, line_words)
         settings_text = json.dumps(settings, sort_keys=True)
         notes = [
             f"Schema-guided re-extract: {schema_name}",
-            f"Matched line: {line_text}",
+            f"Matched line: {self._make_line_from_words(line_words, normalize=True)}",
             f"Schema-guided settings: {settings_text}",
         ]
+        
         return settings, f"Page {page_number} | schema-guided {schema_name}", notes
+
+
+    def _make_line_from_words(self, 
+                              line_words: list[dict[str, Any]],
+                              normalize: bool = False
+                              ) -> str:
+        line_text = " ".join(str(word.get("text", "") or "").strip() for word in line_words).strip()
+        if normalize:
+            line_text = PdfPlumberBackendMixin._normalize_schema_text(line_text)
+        
+        return line_text
 
     def _best_schema_guided_line_match(
         self,
         page: Any,
         options: ExtractionOptions,
-    ) -> tuple[str, str, tuple[float, float, float, float]] | None:
-        words = self._extract_pdfplumber_words(page)
+        words:list[dict[str, Any]] | None = None,
+    ) -> tuple[str, list[dict[str, Any]], tuple[float, float, float, float]] | None:
+        if not words:
+            words = self._extract_pdfplumber_words(page)
+
         if not words:
             return None
 
-        best_match: tuple[float, str, str, tuple[float, float, float, float]] | None = None
-        for line_words in self._group_words_into_lines(words):
-            line_text = " ".join(str(word.get("text", "") or "").strip() for word in line_words).strip()
+        best_match: tuple[float, str, list[dict[str, Any]], tuple[float, float, float, float]] | None = None
+        for i, line_words in enumerate(self._group_words_into_lines(words)):
+            line_text = self._make_line_from_words(line_words)
+            
             if not line_text:
                 continue
             for schema in options.schema_hints:
@@ -814,7 +856,8 @@ class PdfPlumberBackendMixin:
                     max(float(word.get("x1", 0.0) or 0.0) for word in line_words),
                     max(float(word.get("bottom", 0.0) or 0.0) for word in line_words),
                 )
-                candidate = (score, schema.name, line_text, line_box)
+                candidate = (score, schema.name, line_words, line_box)
+                
                 if best_match is None or candidate[0] > best_match[0]:
                     best_match = candidate
 
@@ -865,15 +908,17 @@ class PdfPlumberBackendMixin:
 
         terms = PdfPlumberBackendMixin._schema_hint_terms(schema)
         matched = [term for term in terms if term and term in normalized_line]
+
         if not matched:
             return 0.0
-
+        
         if schema.required_columns:
             required_terms = [PdfPlumberBackendMixin._normalize_schema_text(value) for value in schema.required_columns]
             if any(required_term and required_term not in normalized_line for required_term in required_terms):
                 return 0.0
 
         score = len(matched) / max(len(terms), 1)
+
         if schema.start_header and PdfPlumberBackendMixin._normalize_schema_text(schema.start_header) in normalized_line:
             score += 0.35
         if schema.end_header and PdfPlumberBackendMixin._normalize_schema_text(schema.end_header) in normalized_line:
@@ -896,20 +941,25 @@ class PdfPlumberBackendMixin:
         normalized = re.sub(r"[^a-z0-9]+", " ", stripped.casefold()).strip()
         return re.sub(r"\s+", " ", normalized)
 
-    @staticmethod
+    
     def _schema_guided_table_settings(
+        self,
         page: Any,
         options: ExtractionOptions,
         line_box: tuple[float, float, float, float],
+        line_words: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         settings = dict(_pdfplumber_table_settings(options) or {})
         explicit_vertical_lines = list(settings.get("explicit_vertical_lines", []))
         explicit_horizontal_lines = list(settings.get("explicit_horizontal_lines", []))
         left, top, right, bottom = line_box
-        explicit_vertical_lines.extend([max(left - 1.0, 0.0), min(right + 1.0, float(getattr(page, "width", right) or right))])
-        explicit_horizontal_lines.extend([max(top - 1.0, 0.0), min(bottom + 1.0, float(getattr(page, "height", bottom) or bottom))])
+        os = 1
+        explicit_vertical_lines.extend([max(left - os, 0.0), min(right + os, float(getattr(page, "width", right) or right))])
+        explicit_horizontal_lines.extend([max(top - os, 0.0), min(bottom + os, float(getattr(page, "height", bottom) or bottom))])
         settings["explicit_vertical_lines"] = sorted({round(value, 3) for value in explicit_vertical_lines})
         settings["explicit_horizontal_lines"] = sorted({round(value, 3) for value in explicit_horizontal_lines})
+        
+        
         return settings
 
     @staticmethod
@@ -959,7 +1009,7 @@ class PdfPlumberBackendMixin:
             return None
 
         header_words, matches, delineation_words, delineation_source = header_match
-        column_bounds, vertical_lines = self._header_words_to_column_geometry(delineation_words, matches, scoped_page)
+        column_bounds, vertical_lines = self._header_words_to_column_geometry(delineation_words, scoped_page)
 
         if len(column_bounds) < 2:
             return None
@@ -1123,13 +1173,12 @@ class PdfPlumberBackendMixin:
             }
             for index, word in enumerate(line_words)
         ]
-        print("--")
         
-        print(line_words)
+        
         normalized_entries = [entry for entry in normalized_entries if entry["normalized"]]
-        
         if len(normalized_entries) < 2:
             return None
+        
         normalized_words = [str(entry["normalized"]) for entry in normalized_entries]
         matches: list[dict[str, Any]] = []
         used_word_indexes: set[int] = set()
@@ -1234,41 +1283,44 @@ class PdfPlumberBackendMixin:
 
     def _header_words_to_column_geometry(
         self,
-        header_words: list[dict[str, Any]],
-        matches: list[dict[str, Any]],
+        header_words: list[dict[str, Any]],        
         page: Any,
     ) -> tuple[list[tuple[float, float, str]], list[float]]:
-        page_left = float(
-            getattr(page, "bbox", (0.0, 0.0, getattr(page, "width", 0.0), 0.0))[0]
-            or 0.0
-        )
-        page_right = float(
-            getattr(page, "bbox", (0.0, 0.0, getattr(page, "width", 0.0), 0.0))[2]
-            or getattr(page, "width", 0.0)
-            or 0.0
-        )
+        page_left, page_top, page_right, page_bottom = self._page_box_tuple(page) or (0.0, 0.0, 0.0, 0.0)
+        
         sorted_words = sorted(header_words, key=lambda word: (float(word.get("x0", 0.0) or 0.0), float(word.get("x1", 0.0) or 0.0)))
-        sorted_matches = sorted(matches, key=lambda match: (float(match["x0"]), float(match["x1"])))
-        if len(sorted_words) != len(sorted_matches):
-            sorted_words = self._matches_to_header_words(sorted_matches)
-        vertical_lines: list[float] = [page_left]
-        for index in range(len(sorted_words) - 1):
-            current_right = float(sorted_words[index].get("x1", 0.0) or 0.0)
-            next_left = float(sorted_words[index + 1].get("x0", 0.0) or 0.0)
-            separator = (current_right + next_left) / 2.0
-            vertical_lines.append(separator)
-        vertical_lines.append(page_right)
-        deduped_lines: list[float] = []
-        for line in vertical_lines:
-            if not deduped_lines or abs(line - deduped_lines[-1]) > 0.5:
-                deduped_lines.append(line)
+        
+        vline_overlap_tolerance = 0.5
+        vertical_lines: list[float] = []
+        for index in range(len(sorted_words)):
+            left = float(sorted_words[index].get("x0", 0.0) or 0.0)
+            vertical_lines.append(left)
+            
+        end_line = vertical_lines[-1] if vertical_lines else page_left
+
+        for w in (page.crop((vertical_lines[-1], page_top, page_right, page_bottom)).extract_words() or []):
+            end_line = max(end_line, float(w.get("x1", 0.0) or 0.0))
+        
+        end_line = min(end_line + vline_overlap_tolerance, page_right)
+        
+        vertical_lines = list(set(vertical_lines))
+        vertical_lines.append(end_line)
+        
         bounds: list[tuple[float, float, str]] = []
-        for index, match in enumerate(sorted_matches):
-            if index + 1 >= len(deduped_lines):
+        for index, match in enumerate(sorted_words):
+            if index + 1 >= len(vertical_lines):
                 break
-            left = float(deduped_lines[index])
-            right = float(deduped_lines[index + 1])
-            bounds.append((left, max(left, right), match["label"]))
+            left = float(vertical_lines[index])
+            right = float(vertical_lines[index + 1])
+            bounds.append((left, max(left, right), match["text"]))
+
+        deduped_lines: list[float] = []
+        vertical_lines.sort()
+        
+        for line in vertical_lines:
+            if not deduped_lines or abs(line - deduped_lines[-1]) > vline_overlap_tolerance:
+                deduped_lines.append(line)
+        
         return bounds, deduped_lines
 
     def _extract_rows_by_pdfplumber_settings(

@@ -1548,8 +1548,13 @@ def default_table_schemas() -> list[TableSchema]:
 
 def _format_schema_summary(schema: TableSchema) -> str:
     labels: list[str] = []
+    req: list[str] = schema.required_columns
+
     if schema.columns:
-        labels.append(", ".join(schema.columns))
+        for column in schema.columns:
+            labels.append(column + ("*" if column in req else ""))
+            if column != column[-1]:
+                labels.append(", ")
     if schema.start_header and schema.end_header:
         labels.append(f"[{schema.start_header} -> {schema.end_header}]")
     return f"{schema.name}: {' '.join(labels).strip()}"
@@ -1557,5 +1562,14 @@ def _format_schema_summary(schema: TableSchema) -> str:
 
 def main() -> int:
     app = App()
-    app.mainloop()
+    def _signal_pump() -> None:
+        if app.winfo_exists():
+            app.after(100, _signal_pump)
+
+    app.after(100, _signal_pump)
+    try:
+        app.mainloop()
+    finally:
+        if app.winfo_exists():
+            app.destroy()
     return 0

@@ -326,12 +326,13 @@ def _form_markdown_table(rows: list[list[str]]) -> str:
     if not rows:
         return ""
 
-    header = rows[0]
+    header = [w.replace('\n', '<br>') for w in rows[0]]
     body = rows[1:]
 
     markdown = "| " + " | ".join(header) + " |\n"
     markdown += "| " + " | ".join("---" for _ in header) + " |\n"
     for row in body:
+        row = [w.replace('\n', '<br>') for w in row]
         markdown += "| " + " | ".join(row) + " |\n"
 
     return markdown
