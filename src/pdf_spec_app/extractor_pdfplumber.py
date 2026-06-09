@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -337,7 +338,7 @@ class PdfPlumberBackendMixin:
                     if preview is not None:
                         source_document.page_preview_images.append(preview)
                     try:
-                        raw_page_text = effective_page.extract_text(layout=False) or ""
+                        raw_page_text = effective_page.extract_text(layout=options.preserve_layout) or ""
                     except TypeError:
                         raw_page_text = effective_page.extract_text() or ""
                     try:
@@ -366,12 +367,19 @@ class PdfPlumberBackendMixin:
                         missing_text_pages.append(page_index)
 
                     page_regions = manual_regions_by_page.get(page_number, [])
+                    schema_guided_settings, schema_guided_label, schema_guided_notes = self._schema_guided_page_settings(
+                        effective_page,
+                        page_number,
+                        options,
+                    )
                     source_document.pdfplumber_debug_images.extend(
                         self._capture_pdfplumber_debug_tablefinder_images(
                             effective_page,
                             page_number,
                             options,
                             page_regions,
+                            page_settings_override=schema_guided_settings,
+                            page_label_override=schema_guided_label,
                         )
                     )
 
@@ -391,11 +399,16 @@ class PdfPlumberBackendMixin:
                             page_settings = _pdfplumber_table_settings(options)
                             page_tables.extend(
                                 self._build_pdfplumber_tables_from_rows(
-                                    self._extract_pdfplumber_tables_from_page(effective_page, options),
+                                    self._extract_pdfplumber_tables_from_page(
+                                        effective_page,
+                                        options,
+                                        table_settings_override=schema_guided_settings,
+                                    ),
                                     page_number,
                                     raw_page_text,
                                     backend="pdfplumber",
                                     extraction_box=self._page_box_tuple(page),
+                                    extraction_debug_notes=schema_guided_notes,
                                     extraction_settings_text=self._format_pdfplumber_settings_text(page_settings),
                                     extraction_words=page_words,
                                 )
@@ -452,12 +465,18 @@ class PdfPlumberBackendMixin:
         page_number: int,
         options: ExtractionOptions,
         regions: list[ManualTableRegion],
+        page_settings_override: dict[str, Any] | None = None,
+        page_label_override: str | None = None,
     ) -> list[tuple[int, bytes, str, str]]:
         default_settings = _pdfplumber_table_settings(options)
         default_settings_text = self._format_pdfplumber_settings_text(default_settings)
         if not regions:
-            debug_png = self._capture_pdfplumber_debug_tablefinder(page, options)
-            return [(page_number, debug_png, f"Page {page_number}", default_settings_text)] if debug_png is not None else []
+            debug_png = self._capture_pdfplumber_debug_tablefinder(
+                page,
+                options,
+                table_settings_override=page_settings_override,
+            )
+            return [(page_number, debug_png, page_label_override or f"Page {page_number}")] if debug_png is not None else []
 
         debug_images: list[tuple[int, bytes, str, str]] = []
         for index, region in enumerate(regions, start=1):
@@ -573,6 +592,7 @@ class PdfPlumberBackendMixin:
         source_text: str,
         backend: str,
         extraction_box: tuple[float, float, float, float] | None = None,
+        extraction_debug_notes: list[str] | None = None,
         extraction_settings_text: str | None = None,
         extraction_words: list[dict[str, Any]] | None = None,
     ) -> list[ExtractedTable]:
@@ -594,6 +614,7 @@ class PdfPlumberBackendMixin:
                     raw_text=raw_text,
                     confidence=0.82,
                     backend=backend,
+                    extraction_debug_notes=list(extraction_debug_notes or []),
                     extraction_box=extraction_box,
                     extraction_words=list(extraction_words or []),
                     extraction_debug_notes=(
@@ -624,7 +645,7 @@ class PdfPlumberBackendMixin:
             except Exception:
                 continue
             try:
-                cropped_text = cropped_page.extract_text(layout=False) or page_source_text
+                cropped_text = cropped_page.extract_text(layout=options.preserve_layout) or page_source_text
             except TypeError:
                 cropped_text = cropped_page.extract_text() or page_source_text
             try:
@@ -744,6 +765,151 @@ class PdfPlumberBackendMixin:
         settings["vertical_strategy"] = "explicit"
         settings["explicit_vertical_lines"] = settings.get("explicit_vertical_lines", []) + [float(bbox[0]), float(bbox[2])]
         settings["explicit_horizontal_lines"] = settings.get("explicit_horizontal_lines", []) + [float(bbox[1]), float(bbox[3])]
+        return settings
+
+    def _schema_guided_page_settings(
+        self,
+        page: Any,
+        page_number: int,
+        options: ExtractionOptions,
+    ) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+        if not options.schema_hints:
+            return None, None, []
+
+        line_match = self._best_schema_guided_line_match(page, options)
+        if line_match is None:
+            return None, None, []
+
+        schema_name, line_text, line_box = line_match
+        settings = self._schema_guided_table_settings(page, options, line_box)
+        settings_text = json.dumps(settings, sort_keys=True)
+        notes = [
+            f"Schema-guided re-extract: {schema_name}",
+            f"Matched line: {line_text}",
+            f"Schema-guided settings: {settings_text}",
+        ]
+        return settings, f"Page {page_number} | schema-guided {schema_name}", notes
+
+    def _best_schema_guided_line_match(
+        self,
+        page: Any,
+        options: ExtractionOptions,
+    ) -> tuple[str, str, tuple[float, float, float, float]] | None:
+        words = self._extract_pdfplumber_words(page)
+        if not words:
+            return None
+
+        best_match: tuple[float, str, str, tuple[float, float, float, float]] | None = None
+        for line_words in self._group_words_into_lines(words):
+            line_text = " ".join(str(word.get("text", "") or "").strip() for word in line_words).strip()
+            if not line_text:
+                continue
+            for schema in options.schema_hints:
+                score = self._schema_guided_line_score(line_text, schema)
+                if score < 0.9:
+                    continue
+                line_box = (
+                    min(float(word.get("x0", 0.0) or 0.0) for word in line_words),
+                    min(float(word.get("top", 0.0) or 0.0) for word in line_words),
+                    max(float(word.get("x1", 0.0) or 0.0) for word in line_words),
+                    max(float(word.get("bottom", 0.0) or 0.0) for word in line_words),
+                )
+                candidate = (score, schema.name, line_text, line_box)
+                if best_match is None or candidate[0] > best_match[0]:
+                    best_match = candidate
+
+        if best_match is None:
+            return None
+        return best_match[1], best_match[2], best_match[3]
+
+    @staticmethod
+    def _extract_pdfplumber_words(page: Any) -> list[dict[str, Any]]:
+        try:
+            return page.extract_words(use_text_flow=True) or []
+        except TypeError:
+            try:
+                return page.extract_words() or []
+            except Exception:
+                return []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _group_words_into_lines(words: list[dict[str, Any]], tolerance: float = 3.0) -> list[list[dict[str, Any]]]:
+        ordered = sorted(
+            words,
+            key=lambda word: (
+                float(word.get("top", 0.0) or 0.0),
+                float(word.get("x0", 0.0) or 0.0),
+            ),
+        )
+        lines: list[list[dict[str, Any]]] = []
+        for word in ordered:
+            top = float(word.get("top", 0.0) or 0.0)
+            if not lines:
+                lines.append([word])
+                continue
+            current_line = lines[-1]
+            current_top = float(current_line[0].get("top", 0.0) or 0.0)
+            if abs(top - current_top) <= tolerance:
+                current_line.append(word)
+            else:
+                lines.append([word])
+        return lines
+
+    @staticmethod
+    def _schema_guided_line_score(line_text: str, schema: Any) -> float:
+        normalized_line = PdfPlumberBackendMixin._normalize_schema_text(line_text)
+        if not normalized_line:
+            return 0.0
+
+        terms = PdfPlumberBackendMixin._schema_hint_terms(schema)
+        matched = [term for term in terms if term and term in normalized_line]
+        if not matched:
+            return 0.0
+
+        if schema.required_columns:
+            required_terms = [PdfPlumberBackendMixin._normalize_schema_text(value) for value in schema.required_columns]
+            if any(required_term and required_term not in normalized_line for required_term in required_terms):
+                return 0.0
+
+        score = len(matched) / max(len(terms), 1)
+        if schema.start_header and PdfPlumberBackendMixin._normalize_schema_text(schema.start_header) in normalized_line:
+            score += 0.35
+        if schema.end_header and PdfPlumberBackendMixin._normalize_schema_text(schema.end_header) in normalized_line:
+            score += 0.35
+        return score * float(getattr(schema, "weight", 1.0) or 1.0)
+
+    @staticmethod
+    def _schema_hint_terms(schema: Any) -> list[str]:
+        terms: list[str] = []
+        for value in [*list(getattr(schema, "columns", []) or []), getattr(schema, "start_header", None), getattr(schema, "end_header", None)]:
+            normalized = PdfPlumberBackendMixin._normalize_schema_text(value or "")
+            if normalized and normalized not in terms:
+                terms.append(normalized)
+        return terms
+
+    @staticmethod
+    def _normalize_schema_text(value: str) -> str:
+        stripped = re.sub(r"\(cid\s*:\s*\d+\)", " ", value, flags=re.IGNORECASE)
+        stripped = re.sub(r"\bcid\s*[:#]?\s*\d+\b", " ", stripped, flags=re.IGNORECASE)
+        normalized = re.sub(r"[^a-z0-9]+", " ", stripped.casefold()).strip()
+        return re.sub(r"\s+", " ", normalized)
+
+    @staticmethod
+    def _schema_guided_table_settings(
+        page: Any,
+        options: ExtractionOptions,
+        line_box: tuple[float, float, float, float],
+    ) -> dict[str, Any]:
+        settings = dict(_pdfplumber_table_settings(options) or {})
+        explicit_vertical_lines = list(settings.get("explicit_vertical_lines", []))
+        explicit_horizontal_lines = list(settings.get("explicit_horizontal_lines", []))
+        left, top, right, bottom = line_box
+        explicit_vertical_lines.extend([max(left - 1.0, 0.0), min(right + 1.0, float(getattr(page, "width", right) or right))])
+        explicit_horizontal_lines.extend([max(top - 1.0, 0.0), min(bottom + 1.0, float(getattr(page, "height", bottom) or bottom))])
+        settings["explicit_vertical_lines"] = sorted({round(value, 3) for value in explicit_vertical_lines})
+        settings["explicit_horizontal_lines"] = sorted({round(value, 3) for value in explicit_horizontal_lines})
         return settings
 
     @staticmethod

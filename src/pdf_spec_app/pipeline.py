@@ -34,6 +34,8 @@ class ProcessingPipeline:
     ) -> Specification:
         self._report(progress_callback, 0.0, "Starting specification generation...")
         schemas = table_schemas or []
+        if extraction_options is not None:
+            extraction_options.schema_hints = list(schemas)
         document = self.extractor.extract(file_path, extraction_options, progress_callback)
         self.last_document = document
         if extraction_options is not None and extraction_options.ignore_tables:

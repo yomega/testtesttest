@@ -29,6 +29,8 @@ class ExtractionOptions:
     ocr_backend: str = "tesseract"
     ocr_language: str = "eng"
     manual_table_regions: list["ManualTableRegion"] = field(default_factory=list)
+    schema_hints: list[TableSchema] = field(default_factory=list)
+    preserve_layout: bool = True
 
 
 @dataclass(slots=True)

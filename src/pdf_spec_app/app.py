@@ -631,6 +631,7 @@ class App(tk.Tk):
             ocr_backend=OCR_BACKEND_LABELS.get(self.ocr_backend_var.get().strip(), "tesseract"),
             ocr_language=self.ocr_language_var.get().strip() or "eng",
             manual_table_regions=list(self.manual_table_regions),
+            schema_hints=list(self.table_schemas),
         )
 
     def _on_ignore_tables_changed(self) -> None:
